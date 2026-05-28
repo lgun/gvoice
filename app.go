@@ -1,0 +1,449 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"guvoice/internal/catalog"
+	"guvoice/internal/hangul"
+	"guvoice/internal/ids"
+	"guvoice/internal/model"
+	"guvoice/internal/storage"
+	"guvoice/internal/synth"
+)
+
+type App struct {
+	ctx   context.Context
+	store *storage.Store
+}
+
+func NewApp() *App {
+	return &App{}
+}
+
+func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+	store, err := storage.Open(storage.DefaultBaseDir())
+	if err != nil {
+		println("guvoice storage startup error:", err.Error())
+		return
+	}
+	a.store = store
+}
+
+func (a *App) ensureStore() (*storage.Store, error) {
+	if a.store != nil {
+		return a.store, nil
+	}
+	store, err := storage.Open(storage.DefaultBaseDir())
+	if err != nil {
+		return nil, err
+	}
+	a.store = store
+	return store, nil
+}
+
+func (a *App) GetAppInfo() (model.AppInfo, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.AppInfo{}, err
+	}
+	state := store.StateSnapshot()
+	return model.AppInfo{
+		Name:                  "guvoice",
+		DisplayName:           "구보이스",
+		DataDir:               store.BaseDir(),
+		SelectedVoiceSourceID: state.SelectedVoiceSourceID,
+		MinimumSampleSetID:    catalog.MinimumKoreanSampleSetID,
+		FallbackPolicy:        catalog.DefaultFallbackPolicy(),
+	}, nil
+}
+
+func (a *App) CreateVoiceSource(req model.CreateVoiceSourceRequest) (model.VoiceSource, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.VoiceSource{}, err
+	}
+	return store.CreateVoiceSource(req)
+}
+
+func (a *App) ListVoiceSources() ([]model.VoiceSource, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.ListVoiceSources(), nil
+}
+
+func (a *App) SelectVoiceSource(sourceID string) (model.VoiceSource, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.VoiceSource{}, err
+	}
+	return store.SelectVoiceSource(sourceID)
+}
+
+func (a *App) ListSampleSets() ([]model.SampleSet, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return nil, err
+	}
+	sets := []model.SampleSet{catalog.MinimumKoreanSampleSet()}
+	sets = append(sets, store.ListCustomSampleSets()...)
+	return sets, nil
+}
+
+func (a *App) DefineSampleSet(req model.DefineSampleSetRequest) (model.SampleSet, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.SampleSet{}, err
+	}
+	return store.DefineSampleSet(req)
+}
+
+func (a *App) SaveSample(req model.SaveSampleRequest) (model.Sample, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.Sample{}, err
+	}
+	return store.SaveSample(req)
+}
+
+func (a *App) RegisterUpload(req model.RegisterUploadRequest) (model.Upload, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.Upload{}, err
+	}
+	return store.RegisterUpload(req)
+}
+
+func (a *App) AnalyzeKoreanText(text string) (model.TextAnalysis, error) {
+	return analyzeKoreanText(text), nil
+}
+
+func (a *App) CheckMissingSamples(req model.CheckMissingSamplesRequest) (model.MissingSampleReport, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.MissingSampleReport{}, err
+	}
+	sourceID, err := store.ResolveSourceID(req.SourceID)
+	if err != nil {
+		return model.MissingSampleReport{}, err
+	}
+	analysis := analyzeKoreanText(req.Text)
+	samples := store.ListSamples(sourceID)
+	return buildMissingSampleReport(sourceID, req.Text, analysis, samples), nil
+}
+
+func (a *App) SynthesizeToFile(req model.SynthesisRequest) (model.SynthesisResult, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.SynthesisResult{}, err
+	}
+	sourceID, err := store.ResolveSourceID(req.SourceID)
+	if err != nil {
+		return model.SynthesisResult{}, err
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		return model.SynthesisResult{}, errors.New("text is required")
+	}
+
+	analysis := analyzeKoreanText(req.Text)
+	missing := buildMissingSampleReport(sourceID, req.Text, analysis, store.ListSamples(sourceID))
+	resultID := ids.New("synth")
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	if format == "" {
+		format = "wav"
+	}
+	if format != "wav" {
+		return model.SynthesisResult{}, fmt.Errorf("unsupported synthesis format %q; wav is available in the MVP skeleton", format)
+	}
+
+	baseName := strings.TrimSpace(req.OutputName)
+	if baseName == "" {
+		baseName = resultID
+	}
+	baseName = storage.SafeFileBase(baseName)
+	audioRel := filepath.ToSlash(filepath.Join("exports", baseName+".wav"))
+	manifestRel := filepath.ToSlash(filepath.Join("exports", baseName+".json"))
+	audioPath := filepath.Join(store.BaseDir(), audioRel)
+	manifestPath := filepath.Join(store.BaseDir(), manifestRel)
+
+	duration, err := synth.WritePlaceholderWAV(audioPath, req.Text, synth.Options{
+		SampleRate: req.SampleRate,
+		Speed:      req.Speed,
+	})
+	if err != nil {
+		return model.SynthesisResult{}, err
+	}
+
+	result := model.SynthesisResult{
+		ID:             resultID,
+		SourceID:       sourceID,
+		Text:           req.Text,
+		Format:         format,
+		AudioPath:      audioRel,
+		ManifestPath:   manifestRel,
+		DurationMillis: duration,
+		CreatedAt:      time.Now().UTC(),
+		MissingReport:  missing,
+		Message:        "MVP placeholder WAV generated. High quality concatenative/neural synthesis is intentionally not implemented yet.",
+	}
+
+	manifest, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return model.SynthesisResult{}, err
+	}
+	if err := os.WriteFile(manifestPath, manifest, 0600); err != nil {
+		return model.SynthesisResult{}, err
+	}
+	if err := store.RecordSynthesis(result); err != nil {
+		return model.SynthesisResult{}, err
+	}
+	return result, nil
+}
+
+func (a *App) ExportVoiceSource(req model.ExportRequest) (model.ExportResult, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.ExportResult{}, err
+	}
+	sourceID, err := store.ResolveSourceID(req.SourceID)
+	if err != nil {
+		return model.ExportResult{}, err
+	}
+	source, err := store.GetVoiceSource(sourceID)
+	if err != nil {
+		return model.ExportResult{}, err
+	}
+
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	if format == "" {
+		format = "zip"
+	}
+	if format != "zip" {
+		return model.ExportResult{}, fmt.Errorf("unsupported export format %q; zip is available in the MVP skeleton", format)
+	}
+
+	outputPath := strings.TrimSpace(req.OutputPath)
+	if outputPath == "" {
+		outputPath = filepath.Join(store.ExportsDir(), storage.SafeFileBase(source.Name)+"-"+ids.New("export")+".zip")
+	} else {
+		info, statErr := os.Stat(outputPath)
+		if statErr == nil && info.IsDir() {
+			outputPath = filepath.Join(outputPath, storage.SafeFileBase(source.Name)+"-"+ids.New("export")+".zip")
+		}
+		if filepath.Ext(outputPath) == "" {
+			outputPath += ".zip"
+		}
+	}
+
+	samples := store.ListSamples(sourceID)
+	result, err := store.ExportVoiceSource(source, samples, outputPath)
+	if err != nil {
+		return model.ExportResult{}, err
+	}
+	return result, nil
+}
+
+func analyzeKoreanText(text string) model.TextAnalysis {
+	analysis := model.TextAnalysis{
+		Text:              text,
+		FallbackPolicy:    catalog.DefaultFallbackPolicy(),
+		RequiredPromptIDs: []string{},
+	}
+	syllableCounts := map[rune]int{}
+	jamoCounts := map[string]int{}
+	nonHangulCounts := map[rune]int{}
+	required := map[string]struct{}{}
+
+	for _, r := range text {
+		analysis.RuneCount++
+		parts, ok := hangul.DecomposeRune(r)
+		if !ok {
+			if !isSkippable(r) {
+				nonHangulCounts[r]++
+			}
+			continue
+		}
+		analysis.HangulSyllableCount++
+		syllableCounts[r]++
+		required[hangul.SyllablePromptID(r)] = struct{}{}
+		for _, promptID := range hangul.JamoPromptIDs(parts) {
+			required[promptID] = struct{}{}
+		}
+		jamoCounts[hangul.ChoseongPromptID(parts.Choseong)]++
+		jamoCounts[hangul.JungseongPromptID(parts.Jungseong)]++
+		if parts.HasJongseong() {
+			jamoCounts[hangul.JongseongPromptID(parts.Jongseong)]++
+		}
+	}
+
+	syllables := make([]rune, 0, len(syllableCounts))
+	for r := range syllableCounts {
+		syllables = append(syllables, r)
+	}
+	sort.Slice(syllables, func(i, j int) bool { return syllables[i] < syllables[j] })
+	for _, r := range syllables {
+		parts, _ := hangul.DecomposeRune(r)
+		analysis.DistinctSyllables = append(analysis.DistinctSyllables, model.SyllableUsage{
+			Text:      string(r),
+			CodePoint: fmt.Sprintf("U+%04X", r),
+			Count:     syllableCounts[r],
+			PromptID:  hangul.SyllablePromptID(r),
+			Parts: model.HangulParts{
+				Choseong:          parts.Choseong,
+				Jungseong:         parts.Jungseong,
+				Jongseong:         parts.Jongseong,
+				ChoseongPromptID:  hangul.ChoseongPromptID(parts.Choseong),
+				JungseongPromptID: hangul.JungseongPromptID(parts.Jungseong),
+				JongseongPromptID: hangul.JongseongPromptID(parts.Jongseong),
+			},
+		})
+	}
+
+	jamoIDs := make([]string, 0, len(jamoCounts))
+	for id := range jamoCounts {
+		jamoIDs = append(jamoIDs, id)
+	}
+	sort.Strings(jamoIDs)
+	for _, id := range jamoIDs {
+		analysis.DistinctJamo = append(analysis.DistinctJamo, model.JamoUsage{
+			PromptID: id,
+			Text:     hangul.TokenFromPromptID(id),
+			Count:    jamoCounts[id],
+		})
+	}
+
+	nonHangul := make([]rune, 0, len(nonHangulCounts))
+	for r := range nonHangulCounts {
+		nonHangul = append(nonHangul, r)
+	}
+	sort.Slice(nonHangul, func(i, j int) bool { return nonHangul[i] < nonHangul[j] })
+	for _, r := range nonHangul {
+		analysis.NonHangulRunes = append(analysis.NonHangulRunes, model.RuneUsage{
+			Text:      string(r),
+			CodePoint: fmt.Sprintf("U+%04X", r),
+			Count:     nonHangulCounts[r],
+		})
+	}
+
+	for id := range required {
+		analysis.RequiredPromptIDs = append(analysis.RequiredPromptIDs, id)
+	}
+	sort.Strings(analysis.RequiredPromptIDs)
+	return analysis
+}
+
+func buildMissingSampleReport(sourceID string, text string, analysis model.TextAnalysis, samples []model.Sample) model.MissingSampleReport {
+	latestByPrompt := map[string]model.Sample{}
+	hasAnyUsableSample := false
+	for _, sample := range samples {
+		if sample.PromptID == "" {
+			continue
+		}
+		hasAnyUsableSample = true
+		existing, ok := latestByPrompt[sample.PromptID]
+		if !ok || sample.CreatedAt.After(existing.CreatedAt) {
+			latestByPrompt[sample.PromptID] = sample
+		}
+	}
+
+	report := model.MissingSampleReport{
+		SourceID:         sourceID,
+		Text:             text,
+		Analysis:         analysis,
+		FallbackPolicy:   catalog.DefaultFallbackPolicy(),
+		MissingPromptIDs: []string{},
+		Resolutions:      []model.FallbackResolution{},
+		ReadyForMVP:      analysis.HangulSyllableCount == 0 || hasAnyUsableSample,
+	}
+	missingIDs := map[string]struct{}{}
+	missingExact := map[string]model.SyllableUsage{}
+	missingJamo := map[string]model.JamoUsage{}
+
+	for _, syllable := range analysis.DistinctSyllables {
+		exactID := syllable.PromptID
+		if sample, ok := latestByPrompt[exactID]; ok {
+			report.Resolutions = append(report.Resolutions, model.FallbackResolution{
+				Syllable: syllable.Text,
+				Method:   "exact_syllable",
+				PromptIDs: []string{
+					exactID,
+				},
+				SampleIDs: []string{sample.ID},
+			})
+			continue
+		}
+
+		missingIDs[exactID] = struct{}{}
+		missingExact[exactID] = syllable
+
+		jamoIDs := []string{
+			syllable.Parts.ChoseongPromptID,
+			syllable.Parts.JungseongPromptID,
+		}
+		if syllable.Parts.Jongseong != "" {
+			jamoIDs = append(jamoIDs, syllable.Parts.JongseongPromptID)
+		}
+		sampleIDs := []string{}
+		unavailableJamo := []string{}
+		for _, id := range jamoIDs {
+			if sample, ok := latestByPrompt[id]; ok {
+				sampleIDs = append(sampleIDs, sample.ID)
+			} else {
+				missingIDs[id] = struct{}{}
+				unavailableJamo = append(unavailableJamo, id)
+				missingJamo[id] = model.JamoUsage{
+					PromptID: id,
+					Text:     hangul.TokenFromPromptID(id),
+					Count:    1,
+				}
+			}
+		}
+
+		method := "placeholder"
+		if len(unavailableJamo) == 0 {
+			method = "jamo_composition"
+		} else if hasAnyUsableSample {
+			method = "source_fallback"
+		}
+		report.Resolutions = append(report.Resolutions, model.FallbackResolution{
+			Syllable:         syllable.Text,
+			Method:           method,
+			PromptIDs:        jamoIDs,
+			SampleIDs:        sampleIDs,
+			MissingPromptIDs: unavailableJamo,
+		})
+	}
+
+	for _, usage := range missingExact {
+		report.MissingExactSyllables = append(report.MissingExactSyllables, usage)
+	}
+	sort.Slice(report.MissingExactSyllables, func(i, j int) bool {
+		return report.MissingExactSyllables[i].PromptID < report.MissingExactSyllables[j].PromptID
+	})
+	for _, usage := range missingJamo {
+		report.MissingJamo = append(report.MissingJamo, usage)
+	}
+	sort.Slice(report.MissingJamo, func(i, j int) bool {
+		return report.MissingJamo[i].PromptID < report.MissingJamo[j].PromptID
+	})
+	for id := range missingIDs {
+		report.MissingPromptIDs = append(report.MissingPromptIDs, id)
+	}
+	sort.Strings(report.MissingPromptIDs)
+	report.ReadyForJamoComposition = len(report.MissingJamo) == 0
+	return report
+}
+
+func isSkippable(r rune) bool {
+	return r == ' ' || r == '\n' || r == '\r' || r == '\t'
+}
