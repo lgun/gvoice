@@ -24,29 +24,29 @@ type State struct {
 }
 
 type VoiceSource struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Speaker     string    `json:"speaker"`
-	Kind        string    `json:"kind"`
-	Locale      string    `json:"locale"`
-	Note        string    `json:"note"`
-	Description string    `json:"description"`
-	SampleSetID string    `json:"sampleSetId"`
-	TargetSamples int     `json:"targetSamples"`
-	Selected    bool      `json:"selected"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Speaker       string    `json:"speaker"`
+	Kind          string    `json:"kind"`
+	Locale        string    `json:"locale"`
+	Note          string    `json:"note"`
+	Description   string    `json:"description"`
+	SampleSetID   string    `json:"sampleSetId"`
+	TargetSamples int       `json:"targetSamples"`
+	Selected      bool      `json:"selected"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type CreateVoiceSourceRequest struct {
-	Name        string `json:"name"`
-	Speaker     string `json:"speaker"`
-	Kind        string `json:"kind"`
-	Locale      string `json:"locale"`
-	Note        string `json:"note"`
-	Description string `json:"description"`
-	SampleSetID string `json:"sampleSetId"`
-	TargetSamples int  `json:"targetSamples"`
+	Name          string `json:"name"`
+	Speaker       string `json:"speaker"`
+	Kind          string `json:"kind"`
+	Locale        string `json:"locale"`
+	Note          string `json:"note"`
+	Description   string `json:"description"`
+	SampleSetID   string `json:"sampleSetId"`
+	TargetSamples int    `json:"targetSamples"`
 }
 
 type UpdateVoiceSourceRequest struct {

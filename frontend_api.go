@@ -266,7 +266,7 @@ func (a *App) Synthesize(req UISynthesisRequest) (UIPreviewResult, error) {
 			Message: "소스가 아직 채워지지 않아 미리듣기를 만들 수 없습니다.",
 		}, nil
 	}
-	result, err := a.SynthesizeToFile(model.SynthesisRequest{
+	result, err := a.synthesizeToFile(model.SynthesisRequest{
 		SourceID:   req.SourceID,
 		Text:       req.Text,
 		Format:     "wav",
@@ -299,7 +299,7 @@ func (a *App) ExportMP3(req UISynthesisRequest) (UIExportResult, error) {
 			Message: "소스가 아직 채워지지 않아 저장할 수 없습니다.",
 		}, nil
 	}
-	result, err := a.SynthesizeToFile(model.SynthesisRequest{
+	result, err := a.synthesizeToFile(model.SynthesisRequest{
 		SourceID:   req.SourceID,
 		Text:       req.Text,
 		Format:     "wav",

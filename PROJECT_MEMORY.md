@@ -67,11 +67,9 @@ Docs:
 
 ## Current Limitations
 
-- Go and Wails CLI were not installed in the environment when this was created, so Go compile/tests were not run.
-- Frontend build was verified with `npm run build`.
-- Dev server responded at `http://127.0.0.1:5173/`.
 - Actual sample concatenation synthesis is not implemented yet.
 - MP3 export is represented by the UI/API, but backend currently saves a placeholder WAV because no MP3 encoder/ffmpeg is wired in.
+- Wails generated `frontend/wailsjs/` and `frontend/package.json.md5` are ignored because the current frontend adapter does not import generated bindings directly.
 
 ## Verification Already Done
 
@@ -82,19 +80,36 @@ npm run build
 
 Result: passed.
 
-These failed because tools were unavailable:
+Go and Wails were installed locally for this workspace session:
+
+- Go: `C:\Users\zjavb\.codex\tools\go1.26.3\go`
+- Wails CLI: `C:\Users\zjavb\.codex\tools\gobin\wails.exe`
+
+Use this PATH setup in PowerShell if system Go/Wails are still unavailable:
+
+```powershell
+$goRoot = Join-Path $env:USERPROFILE '.codex\tools\go1.26.3\go'
+$gobin = Join-Path $env:USERPROFILE '.codex\tools\gobin'
+$env:GOROOT = $goRoot
+$env:GOBIN = $gobin
+$env:PATH = (Join-Path $goRoot 'bin') + ';' + $gobin + ';' + $env:PATH
+```
+
+These commands were verified after installing local tools:
 
 ```powershell
 go test ./...
-wails version
-ffmpeg -version
+wails doctor
+wails build
 ```
+
+Result: passed. `wails build` produced `build\bin\guvoice.exe`.
+
+`ffmpeg -version` was still unavailable, so real MP3 encoding remains unwired.
 
 ## Recommended Next Steps
 
-1. Install Go and Wails, then run `go test ./...` and `wails dev`.
-2. Run `gofmt` on all Go files.
-3. Verify Wails binding generation matches `frontend_api.go`.
-4. Replace placeholder WAV synthesis with actual sample concatenation.
-5. Add real MP3 export through ffmpeg detection/bundling or a Go encoder.
-6. Improve recording flow with sample-by-sample queue, quality checks, trim, and retry.
+1. Run `wails dev` with the local Go/Wails PATH above or install Go/Wails globally.
+2. Replace placeholder WAV synthesis with actual sample concatenation.
+3. Add real MP3 export through ffmpeg detection/bundling or a Go encoder.
+4. Improve recording flow with sample-by-sample queue, quality checks, trim, and retry.

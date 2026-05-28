@@ -24,8 +24,6 @@
 
 ## 개발 실행
 
-이 환경에는 현재 Go/Wails CLI가 없어서 프론트엔드만 검증했습니다.
-
 ```powershell
 cd frontend
 npm install
@@ -36,8 +34,25 @@ Go와 Wails가 설치된 환경에서는 다음 흐름을 사용합니다.
 
 ```powershell
 go mod tidy
+go test ./...
 wails dev
 ```
+
+현재 작업 환경에서는 시스템 전역 설치 대신 로컬 도구 폴더를 사용해 검증했습니다.
+
+```powershell
+$goRoot = Join-Path $env:USERPROFILE '.codex\tools\go1.26.3\go'
+$gobin = Join-Path $env:USERPROFILE '.codex\tools\gobin'
+$env:GOROOT = $goRoot
+$env:GOBIN = $gobin
+$env:PATH = (Join-Path $goRoot 'bin') + ';' + $gobin + ';' + $env:PATH
+
+go test ./...
+wails doctor
+wails build
+```
+
+검증 결과 `build\bin\guvoice.exe` 생성까지 성공했습니다.
 
 ## 제한
 

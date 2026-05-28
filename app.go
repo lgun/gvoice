@@ -50,7 +50,7 @@ func (a *App) ensureStore() (*storage.Store, error) {
 	return store, nil
 }
 
-func (a *App) GetAppInfo() (model.AppInfo, error) {
+func (a *App) getAppInfo() (model.AppInfo, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.AppInfo{}, err
@@ -66,7 +66,7 @@ func (a *App) GetAppInfo() (model.AppInfo, error) {
 	}, nil
 }
 
-func (a *App) CreateVoiceSource(req model.CreateVoiceSourceRequest) (model.VoiceSource, error) {
+func (a *App) createVoiceSource(req model.CreateVoiceSourceRequest) (model.VoiceSource, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.VoiceSource{}, err
@@ -74,7 +74,7 @@ func (a *App) CreateVoiceSource(req model.CreateVoiceSourceRequest) (model.Voice
 	return store.CreateVoiceSource(req)
 }
 
-func (a *App) ListVoiceSources() ([]model.VoiceSource, error) {
+func (a *App) listVoiceSources() ([]model.VoiceSource, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return nil, err
@@ -82,7 +82,7 @@ func (a *App) ListVoiceSources() ([]model.VoiceSource, error) {
 	return store.ListVoiceSources(), nil
 }
 
-func (a *App) SelectVoiceSource(sourceID string) (model.VoiceSource, error) {
+func (a *App) selectVoiceSource(sourceID string) (model.VoiceSource, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.VoiceSource{}, err
@@ -90,7 +90,7 @@ func (a *App) SelectVoiceSource(sourceID string) (model.VoiceSource, error) {
 	return store.SelectVoiceSource(sourceID)
 }
 
-func (a *App) ListSampleSets() ([]model.SampleSet, error) {
+func (a *App) listSampleSets() ([]model.SampleSet, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return nil, err
@@ -100,7 +100,7 @@ func (a *App) ListSampleSets() ([]model.SampleSet, error) {
 	return sets, nil
 }
 
-func (a *App) DefineSampleSet(req model.DefineSampleSetRequest) (model.SampleSet, error) {
+func (a *App) defineSampleSet(req model.DefineSampleSetRequest) (model.SampleSet, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.SampleSet{}, err
@@ -108,7 +108,7 @@ func (a *App) DefineSampleSet(req model.DefineSampleSetRequest) (model.SampleSet
 	return store.DefineSampleSet(req)
 }
 
-func (a *App) SaveSample(req model.SaveSampleRequest) (model.Sample, error) {
+func (a *App) saveSample(req model.SaveSampleRequest) (model.Sample, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.Sample{}, err
@@ -116,7 +116,7 @@ func (a *App) SaveSample(req model.SaveSampleRequest) (model.Sample, error) {
 	return store.SaveSample(req)
 }
 
-func (a *App) RegisterUpload(req model.RegisterUploadRequest) (model.Upload, error) {
+func (a *App) registerUpload(req model.RegisterUploadRequest) (model.Upload, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.Upload{}, err
@@ -124,11 +124,11 @@ func (a *App) RegisterUpload(req model.RegisterUploadRequest) (model.Upload, err
 	return store.RegisterUpload(req)
 }
 
-func (a *App) AnalyzeKoreanText(text string) (model.TextAnalysis, error) {
+func (a *App) analyzeKoreanTextDetails(text string) (model.TextAnalysis, error) {
 	return analyzeKoreanText(text), nil
 }
 
-func (a *App) CheckMissingSamples(req model.CheckMissingSamplesRequest) (model.MissingSampleReport, error) {
+func (a *App) checkMissingSamples(req model.CheckMissingSamplesRequest) (model.MissingSampleReport, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.MissingSampleReport{}, err
@@ -142,7 +142,7 @@ func (a *App) CheckMissingSamples(req model.CheckMissingSamplesRequest) (model.M
 	return buildMissingSampleReport(sourceID, req.Text, analysis, samples), nil
 }
 
-func (a *App) SynthesizeToFile(req model.SynthesisRequest) (model.SynthesisResult, error) {
+func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResult, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.SynthesisResult{}, err
@@ -210,7 +210,7 @@ func (a *App) SynthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 	return result, nil
 }
 
-func (a *App) ExportVoiceSource(req model.ExportRequest) (model.ExportResult, error) {
+func (a *App) exportVoiceSource(req model.ExportRequest) (model.ExportResult, error) {
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.ExportResult{}, err
