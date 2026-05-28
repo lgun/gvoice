@@ -134,13 +134,24 @@ const extractTokens = (text: string) => {
 const analyzeFromSamples = (source: VoiceSource, text: string): AnalysisResult => {
   const requiredTokens = extractTokens(text);
   const target = Math.max(source.targetSamples || MIN_SAMPLE_TARGET, 1);
-  const filled = Math.min(source.samples.length, target);
+  const requiredPrompts = SAMPLE_PROMPTS.slice(0, target);
+  const filledPromptIds = new Set(source.samples.map((sample) => sample.promptId ?? sample.label));
+  const missingPrompts = requiredPrompts.filter((prompt) => !filledPromptIds.has(prompt.id));
+  const filled = requiredPrompts.length - missingPrompts.length;
   const missing: MissingSample[] = [];
 
-  if (source.samples.length < target) {
+  for (const prompt of missingPrompts.slice(0, 10)) {
     missing.push({
-      token: `${target - source.samples.length}개`,
-      reason: "필수 샘플이 아직 채워지지 않았습니다.",
+      token: prompt.text,
+      reason: `${prompt.label} 샘플이 없습니다.`,
+      severity: "missing"
+    });
+  }
+
+  if (missingPrompts.length > 10) {
+    missing.push({
+      token: `+${missingPrompts.length - 10}개`,
+      reason: "추가 필수 샘플이 더 필요합니다.",
       severity: "missing"
     });
   }

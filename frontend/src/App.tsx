@@ -35,8 +35,20 @@ const formatDate = (value: string) => {
   }).format(date);
 };
 
+const requiredPromptsFor = (source?: VoiceSource) =>
+  SAMPLE_PROMPTS.slice(0, source?.targetSamples ?? MIN_SAMPLE_TARGET);
+
+const filledPromptIdsOf = (source?: VoiceSource) =>
+  new Set(source?.samples.map((sample) => sample.promptId ?? sample.label) ?? []);
+
+const filledCountOf = (source?: VoiceSource) => {
+  const required = requiredPromptsFor(source);
+  const filledIds = filledPromptIdsOf(source);
+  return required.filter((prompt) => filledIds.has(prompt.id)).length;
+};
+
 const progressOf = (source: VoiceSource) =>
-  Math.min(100, Math.round((source.samples.length / source.targetSamples) * 100));
+  Math.min(100, Math.round((filledCountOf(source) / source.targetSamples) * 100));
 
 const blobToDataUrl = (blob: Blob) =>
   new Promise<string>((resolve, reject) => {
@@ -107,7 +119,7 @@ function SourceList({
               >
                 <span className="source-title">{source.name}</span>
                 <span className="source-meta">
-                  {source.speaker} · 샘플 {source.samples.length}/{source.targetSamples}
+                  {source.speaker} · 필수 {filledCountOf(source)}/{source.targetSamples}
                 </span>
                 <ProgressBar value={progress} />
               </button>
@@ -179,7 +191,7 @@ function SpeakTab({
   onExport: () => void;
   onGoRecord: () => void;
 }) {
-  const sampleCount = selectedSource?.samples.length ?? 0;
+  const sampleCount = filledCountOf(selectedSource);
   const targetCount = selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET;
   const hasBlockingMissing = Boolean(analysis?.missing.some((item) => item.severity === "missing"));
   const sourceComplete = Boolean(selectedSource && sampleCount >= targetCount);
@@ -191,7 +203,7 @@ function SpeakTab({
     : !text.trim()
       ? "말할 텍스트를 입력하세요."
       : sampleCount < targetCount
-        ? `샘플 ${targetCount - sampleCount}개를 더 녹음해야 합니다.`
+        ? `필수 샘플 ${targetCount - sampleCount}개를 더 녹음해야 합니다.`
         : hasBlockingMissing
           ? "누락 샘플을 확인하세요."
           : "미리듣기 가능";
@@ -519,7 +531,7 @@ function RecordTab({
             <h2>{selectedSource?.name ?? "새 소스가 자동으로 만들어집니다"}</h2>
           </div>
           <span className="pill">
-            샘플 {selectedSource?.samples.length ?? 0}/{selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET}
+            필수 {filledCountOf(selectedSource)}/{selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET}
           </span>
         </div>
 
@@ -762,7 +774,7 @@ function StatusPanel({
   preview: PreviewResult | null;
 }) {
   const progress = selectedSource ? progressOf(selectedSource) : 0;
-  const sourceComplete = Boolean(selectedSource && selectedSource.samples.length >= selectedSource.targetSamples);
+  const sourceComplete = Boolean(selectedSource && filledCountOf(selectedSource) >= selectedSource.targetSamples);
   const coveredPromptLabels = new Set(selectedSource?.samples.map((sample) => sample.label));
   const coveredPromptIds = new Set(selectedSource?.samples.map((sample) => sample.promptId ?? sample.label));
   const nextPrompts = SAMPLE_PROMPTS.filter(
@@ -791,7 +803,7 @@ function StatusPanel({
           <div>
             <dt>샘플</dt>
             <dd>
-              {selectedSource?.samples.length ?? 0}/{selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET}
+              {filledCountOf(selectedSource)}/{selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET}
             </dd>
           </div>
           <div>
@@ -816,8 +828,8 @@ function StatusPanel({
         </dl>
       </div>
 
-      <div className="status-block next-block">
-        <FieldLabel>다음 샘플</FieldLabel>
+        <div className="status-block next-block">
+        <FieldLabel>다음 필수 샘플</FieldLabel>
         <div className="next-list">
           {nextPrompts.length ? (
             nextPrompts.map((prompt) => (

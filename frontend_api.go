@@ -14,7 +14,7 @@ import (
 	"guvoice/internal/storage"
 )
 
-const defaultTargetSamples = 12
+const defaultTargetSamples = 25
 
 type UIVoiceSample struct {
 	ID         string  `json:"id"`
@@ -365,7 +365,13 @@ func sourceToUI(source model.VoiceSource, samples []model.Sample) UIVoiceSource 
 
 func analyzeSourceCoverage(source model.VoiceSource, samples []model.Sample, text string) UIAnalysisResult {
 	target := normalizeTarget(source.TargetSamples)
-	matched := len(samples)
+	filledIDs := map[string]bool{}
+	for _, sample := range samples {
+		if sample.PromptID != "" {
+			filledIDs[sample.PromptID] = true
+		}
+	}
+	matched := len(filledIDs)
 	if matched > target {
 		matched = target
 	}
@@ -381,9 +387,9 @@ func analyzeSourceCoverage(source model.VoiceSource, samples []model.Sample, tex
 			Severity: "warn",
 		})
 	}
-	if len(samples) < target {
+	if matched < target {
 		missing = append(missing, UIMissingSample{
-			Token:    fmt.Sprintf("%d개", target-len(samples)),
+			Token:    fmt.Sprintf("%d개", target-matched),
 			Reason:   "필수 샘플이 아직 채워지지 않았습니다.",
 			Severity: "missing",
 		})
@@ -406,11 +412,11 @@ func hasBlockingMissing(report UIAnalysisResult) bool {
 }
 
 func sampleLabel(sample model.Sample) string {
-	if sample.PromptID != "" {
-		return sample.PromptID
-	}
 	if sample.Transcript != "" {
 		return sample.Transcript
+	}
+	if sample.PromptID != "" {
+		return sample.PromptID
 	}
 	return sample.FileName
 }

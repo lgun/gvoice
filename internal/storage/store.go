@@ -97,7 +97,7 @@ func (s *Store) CreateVoiceSource(req model.CreateVoiceSourceRequest) (model.Voi
 	}
 	targetSamples := req.TargetSamples
 	if targetSamples <= 0 {
-		targetSamples = 12
+		targetSamples = 25
 	}
 
 	now := time.Now().UTC()
@@ -139,7 +139,7 @@ func (s *Store) UpdateVoiceSource(sourceID string, req model.UpdateVoiceSourceRe
 	}
 	targetSamples := req.TargetSamples
 	if targetSamples <= 0 {
-		targetSamples = 12
+		targetSamples = 25
 	}
 
 	s.mu.Lock()
