@@ -271,11 +271,14 @@ func (a *App) Synthesize(req UISynthesisRequest) (UIPreviewResult, error) {
 		}, nil
 	}
 	result, err := a.synthesizeToFile(model.SynthesisRequest{
-		SourceID:   req.SourceID,
-		Text:       req.Text,
-		Format:     "wav",
-		OutputName: "preview-" + ids.New("audio"),
-		Speed:      req.Options.Speed,
+		SourceID:       req.SourceID,
+		Text:           req.Text,
+		Format:         "wav",
+		OutputName:     "preview-" + ids.New("audio"),
+		Speed:          req.Options.Speed,
+		Pitch:          req.Options.Pitch,
+		Clarity:        req.Options.Clarity,
+		NoiseReduction: req.Options.NoiseReduction,
 	})
 	if err != nil {
 		return UIPreviewResult{
@@ -308,11 +311,14 @@ func (a *App) ExportMP3(req UISynthesisRequest) (UIExportResult, error) {
 		}, nil
 	}
 	result, err := a.synthesizeToFile(model.SynthesisRequest{
-		SourceID:   req.SourceID,
-		Text:       req.Text,
-		Format:     "wav",
-		OutputName: "guvoice-" + time.Now().Format("20060102-150405"),
-		Speed:      req.Options.Speed,
+		SourceID:       req.SourceID,
+		Text:           req.Text,
+		Format:         "mp3",
+		OutputName:     "guvoice-" + time.Now().Format("20060102-150405"),
+		Speed:          req.Options.Speed,
+		Pitch:          req.Options.Pitch,
+		Clarity:        req.Options.Clarity,
+		NoiseReduction: req.Options.NoiseReduction,
 	})
 	if err != nil {
 		return UIExportResult{
@@ -327,7 +333,7 @@ func (a *App) ExportMP3(req UISynthesisRequest) (UIExportResult, error) {
 	path := filepath.Join(store.BaseDir(), filepath.FromSlash(result.AudioPath))
 	return UIExportResult{
 		Status:  "saved",
-		Message: "WAV 파일로 저장했습니다.",
+		Message: "MP3 파일로 저장했습니다.",
 		Path:    path,
 	}, nil
 }

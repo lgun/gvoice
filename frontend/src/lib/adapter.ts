@@ -304,15 +304,10 @@ const fallbackApi = {
     } satisfies PreviewResult;
   },
 
-  async exportMP3(request: SynthesisRequest): Promise<ExportResult> {
-    const audioUrl = createDemoWav(request.text);
-    const response = await fetch(audioUrl);
-    const blob = await response.blob();
-
+  async exportMP3(_request: SynthesisRequest): Promise<ExportResult> {
     return {
-      status: "ready",
-      message: "브라우저 데모 WAV 다운로드를 준비했습니다.",
-      downloadUrl: URL.createObjectURL(blob)
+      status: "error",
+      message: "브라우저 데모는 MP3 저장을 지원하지 않습니다. Wails 앱에서 저장해 주세요."
     } satisfies ExportResult;
   },
 

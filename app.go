@@ -183,8 +183,8 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 	if format == "" {
 		format = "wav"
 	}
-	if format != "wav" {
-		return model.SynthesisResult{}, fmt.Errorf("unsupported synthesis format %q; wav is available in this MVP", format)
+	if format != "wav" && format != "mp3" {
+		return model.SynthesisResult{}, fmt.Errorf("unsupported synthesis format %q; wav and mp3 are available", format)
 	}
 
 	baseName := strings.TrimSpace(req.OutputName)
@@ -192,7 +192,7 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		baseName = resultID
 	}
 	baseName = storage.SafeFileBase(baseName)
-	audioRel := filepath.ToSlash(filepath.Join("exports", baseName+".wav"))
+	audioRel := filepath.ToSlash(filepath.Join("exports", baseName+"."+format))
 	manifestRel := filepath.ToSlash(filepath.Join("exports", baseName+".json"))
 	audioPath := filepath.Join(store.BaseDir(), audioRel)
 	manifestPath := filepath.Join(store.BaseDir(), manifestRel)
@@ -217,10 +217,19 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 
 	missing := buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, source.TargetSamples)
 
-	duration, err := synth.WriteSequenceWAV(audioPath, steps, synth.Options{
-		SampleRate: req.SampleRate,
-		Speed:      req.Speed,
-	})
+	options := synth.Options{
+		SampleRate:     req.SampleRate,
+		Speed:          req.Speed,
+		Pitch:          req.Pitch,
+		Clarity:        req.Clarity,
+		NoiseReduction: req.NoiseReduction,
+	}
+	var duration int
+	if format == "mp3" {
+		duration, err = synth.WriteSequenceMP3(audioPath, steps, options)
+	} else {
+		duration, err = synth.WriteSequenceWAV(audioPath, steps, options)
+	}
 	if err != nil {
 		return model.SynthesisResult{}, err
 	}
@@ -235,7 +244,7 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		DurationMillis: duration,
 		CreatedAt:      time.Now().UTC(),
 		MissingReport:  missing,
-		Message:        fmt.Sprintf("샘플 기반 WAV를 생성했습니다. 사용한 promptId: %s", strings.Join(usedPromptIDs, ", ")),
+		Message:        fmt.Sprintf("샘플 기반 %s를 생성했습니다. 사용한 promptId: %s", strings.ToUpper(format), strings.Join(usedPromptIDs, ", ")),
 	}
 
 	manifest, err := json.MarshalIndent(result, "", "  ")

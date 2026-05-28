@@ -2,7 +2,10 @@ module guvoice
 
 go 1.22.0
 
-require github.com/wailsapp/wails/v2 v2.10.2
+require (
+	github.com/braheezy/shine-mp3 v0.1.0
+	github.com/wailsapp/wails/v2 v2.10.2
+)
 
 require (
 	github.com/bep/debounce v1.2.1 // indirect

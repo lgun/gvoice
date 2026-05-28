@@ -39,7 +39,8 @@ The MVP keeps final consonants as a timing/pitch artifact rather than requiring 
 - React owns recording UI through `getUserMedia` + Web Audio API PCM capture and passes mono 16-bit WAV data URLs to Go when Wails bindings exist.
 - The frontend also has a localStorage fallback so the UI can be demonstrated in a normal browser during development.
 - Internal sample storage should keep original captures and metadata under the user's application data directory.
-- The Go backend decodes saved WAV samples by promptId and renders preview/export WAV files by concatenating the mapped sample sequence.
+- The Go backend decodes saved WAV samples by promptId, renders preview WAV files, and renders MP3 exports by concatenating the mapped sample sequence.
+- Upload accepts browser/WebView2-decodable `audio/*`, converts it to mono 16-bit WAV in the frontend, and sends that WAV sample to Go.
+- The backend WAV decoder accepts RIFF/WAVE 16-bit PCM and WAVE_FORMAT_EXTENSIBLE PCM subtype.
+- Speed, pitch, clarity, and noise reduction are applied as simple DSP approximations over PCM.
 - Prosody rule: supported punctuation is preserved in `sequenceForText` as synthesis timing/expression. Spaces become short clamped pauses, comma/period-like marks have distinct pause lengths, `!` emphasizes, `?` slows/stretches the ending, and `~` stretches the previous sample without adding missing sample requirements.
-- MP3 export remains a follow-up; until an encoder is wired in, export saves the generated WAV and returns that path.
-- WAV upload decoding is limited to RIFF/WAVE 16-bit PCM for the MVP; WAVE_FORMAT_EXTENSIBLE can be added later.

@@ -12,7 +12,7 @@ The core loop is:
 2. Fill the source with required samples through direct recording or upload.
 3. Type text in the Speak screen.
 4. Generate a preview only when the selected source is sufficiently filled.
-5. Export the result, ultimately as MP3.
+5. Export the result as MP3.
 
 Direct recording is the primary workflow. Upload is a secondary convenience workflow.
 
@@ -50,6 +50,7 @@ Frontend:
 
 - `frontend/src/App.tsx`: main React UI.
 - `frontend/src/lib/adapter.ts`: Wails-first API adapter with browser localStorage fallback.
+- `frontend/src/lib/audio.ts`: Web Audio upload decoding and mono 16-bit WAV re-encoding helpers.
 - `frontend/src/types.ts`: UI data contracts.
 - `frontend/src/styles.css`: operational desktop-tool styling.
 
@@ -62,7 +63,7 @@ Backend:
 - `internal/storage/store.go`: JSON state, source/sample/upload/export persistence.
 - `internal/hangul/hangul.go`: Hangul decomposition/compose helpers.
 - `internal/catalog/catalog.go`: Korean minimal sample set.
-- `internal/synth/wav.go`: WAV reader/writer and concatenative sequence renderer.
+- `internal/synth/wav.go`: WAV reader/writer, MP3 writer, simple DSP options, and concatenative sequence renderer.
 
 Prosody note: spaces, commas, periods, `!`, `?`, and `~` are synthesis controls, not sample requirements. They add clamped pauses or adjust the previous prompt step's gain, speed, gap, and stretch while preserving the rule that empty or incomplete voice sources cannot generate speech.
 
@@ -74,10 +75,11 @@ Docs:
 ## Current Limitations
 
 - Sample concatenation synthesis is implemented for WAV samples recorded by the app.
-- Export currently saves the sample-based output as WAV because no MP3 encoder/ffmpeg is wired in.
+- Export saves the sample-based output as a real `.mp3` using the pure Go `github.com/braheezy/shine-mp3/pkg/mp3` encoder; preview remains WAV.
 - Wails generated `frontend/wailsjs/` and `frontend/package.json.md5` are ignored because the current frontend adapter does not import generated bindings directly.
-- Older samples captured as WebM/Opus by previous builds are not usable for synthesis; re-record them in the current WAV-based recorder.
-- WAV decoding currently accepts RIFF/WAVE 16-bit PCM. WAVE_FORMAT_EXTENSIBLE uploads are not handled yet; app recordings already use supported PCM16 WAV.
+- Older samples captured as WebM/Opus by previous builds are not usable directly from disk; re-upload them through the current upload flow or re-record them so they are stored as WAV samples.
+- Upload uses WebView2/browser `decodeAudioData` and then stores mono 16-bit WAV. Formats/codecs the WebView cannot decode still fail with a clear error.
+- Pitch, clarity, and noise reduction are implemented as simple DSP approximations over PCM, not as studio-grade voice processing.
 
 ## Verification Already Done
 
@@ -113,7 +115,7 @@ wails build
 
 Result: passed. `wails build` produced `build\bin\guvoice.exe`.
 
-`ffmpeg -version` was still unavailable, so real MP3 encoding remains unwired.
+MP3 encoding no longer depends on `ffmpeg`; it is handled by a bundled pure Go dependency.
 
 Additional verification after sample-based synthesis implementation:
 
@@ -128,6 +130,6 @@ Result: passed. The root integration test records all required promptIds into a 
 ## Recommended Next Steps
 
 1. Run `wails dev` with the local Go/Wails PATH above or install Go/Wails globally.
-2. Add real MP3 export through ffmpeg detection/bundling or a Go encoder.
-3. Improve recording flow with sample-by-sample queue, quality checks, trim, and retry.
-4. Add better upload validation/conversion for non-WAV files.
+2. Improve recording flow with sample-by-sample queue, quality checks, trim, and retry.
+3. Improve DSP quality beyond the current simple approximations.
+4. Consider broader import/migration tooling for samples captured by older WebM/Opus builds.

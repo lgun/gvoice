@@ -76,6 +76,61 @@ func TestSynthesizeToFileUsesRecordedWAVSamples(t *testing.T) {
 	}
 }
 
+func TestExportMP3WritesMP3File(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.CreateVoiceSource(model.CreateVoiceSourceRequest{
+		Name:          "mp3 voice",
+		TargetSamples: 25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, prompt := range requiredPromptDefinitions(source.TargetSamples) {
+		_, err := store.SaveSample(model.SaveSampleRequest{
+			SourceID:       source.ID,
+			PromptID:       prompt.ID,
+			FileName:       prompt.ID + ".wav",
+			DataBase64:     testWAVDataURL(t, 260+index*7),
+			Transcript:     prompt.Text,
+			DurationMillis: 120,
+		})
+		if err != nil {
+			t.Fatalf("save sample %s: %v", prompt.ID, err)
+		}
+	}
+
+	app := &App{store: store}
+	result, err := app.ExportMP3(UISynthesisRequest{
+		SourceID: source.ID,
+		Text:     "媛",
+		Options: UISynthesisOptions{
+			Speed:          1,
+			Pitch:          2,
+			Clarity:        70,
+			NoiseReduction: 40,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "saved" {
+		t.Fatalf("expected saved export, got %#v", result)
+	}
+	if filepath.Ext(result.Path) != ".mp3" {
+		t.Fatalf("expected .mp3 export path, got %s", result.Path)
+	}
+	data, err := os.ReadFile(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMP3FrameHeader(data) {
+		t.Fatalf("expected MP3 frame header, got first bytes % x", data[:min(len(data), 8)])
+	}
+}
+
 func TestSynthesizeToFileBlocksMissingRequiredSamples(t *testing.T) {
 	store, err := storage.Open(t.TempDir())
 	if err != nil {
@@ -207,6 +262,15 @@ func testWAVDataURL(t *testing.T, frequency int) string {
 func containsMissingPrompt(report UIAnalysisResult, promptID string) bool {
 	for _, missing := range report.Missing {
 		if missing.PromptID == promptID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMP3FrameHeader(data []byte) bool {
+	for index := 0; index+1 < len(data); index++ {
+		if data[index] == 0xFF && data[index+1]&0xE0 == 0xE0 {
 			return true
 		}
 	}

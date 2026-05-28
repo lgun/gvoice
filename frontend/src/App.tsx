@@ -1,5 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { voiceApi } from "./lib/adapter";
+import { decodeAudioFileToMonoWav } from "./lib/audio";
 import {
   AnalysisResult,
   EngineStatus,
@@ -53,14 +54,6 @@ const filledCountOf = (source?: VoiceSource) => {
 
 const progressOf = (source: VoiceSource) =>
   Math.min(100, Math.round((filledCountOf(source) / clampTargetSamples(source.targetSamples)) * 100));
-
-const blobToDataUrl = (blob: Blob) =>
-  new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("오디오를 읽지 못했습니다."));
-    reader.readAsDataURL(blob);
-  });
 
 type WindowWithWebkitAudio = Window & {
   webkitAudioContext?: typeof AudioContext;
@@ -362,7 +355,7 @@ function SpeakTab({
           {isSynthesizing ? "생성 중" : "미리듣기"}
         </button>
         <button type="button" onClick={onExport} disabled={!canExport || isExporting}>
-          {isExporting ? "저장 중" : "WAV 저장"}
+          {isExporting ? "저장 중" : "MP3 저장"}
         </button>
         <span className="button-state">{preview?.message ?? previewHint}</span>
       </div>
@@ -625,19 +618,16 @@ function RecordTab({
     setRecorderError("");
     try {
       for (const file of files) {
-        const isWav = file.type === "audio/wav" || file.type === "audio/wave" || file.name.toLowerCase().endsWith(".wav");
-        if (!isWav) {
-          throw new Error("업로드 합성은 WAV/PCM 파일만 지원합니다. 녹음 파일을 WAV로 변환해서 다시 올려 주세요.");
-        }
+        const converted = await decodeAudioFileToMonoWav(file);
         await onAddSample(source.id, {
           promptId: selectedPrompt.id,
           label: label.trim() || selectedPrompt.label || file.name,
           text: transcript.trim() || selectedPrompt.text || file.name,
-          duration: 0,
+          duration: converted.duration,
           origin: "upload",
-          audioName: file.name,
-          audioUrl: URL.createObjectURL(file),
-          dataBase64: await blobToDataUrl(file)
+          audioName: converted.fileName,
+          audioUrl: converted.previewUrl,
+          dataBase64: converted.dataUrl
         });
       }
     } catch (error) {
@@ -713,7 +703,7 @@ function RecordTab({
             </div>
             <label className="file-button">
               파일 업로드
-              <input type="file" accept=".wav,audio/wav,audio/wave,audio/x-wav" multiple onChange={handleUpload} />
+              <input type="file" accept="audio/*,.wav" multiple onChange={handleUpload} />
             </label>
           </div>
           <div className="prompt-grid">
@@ -952,7 +942,7 @@ function StatusPanel({
             <dd>{sourceComplete ? "가능" : "대기"}</dd>
           </div>
           <div>
-            <dt>WAV 저장</dt>
+            <dt>MP3 저장</dt>
             <dd>{preview?.status === "ready" ? "가능" : "대기"}</dd>
           </div>
         </dl>
@@ -1142,7 +1132,7 @@ export default function App() {
       if (result.downloadUrl) {
         const anchor = document.createElement("a");
         anchor.href = result.downloadUrl;
-        anchor.download = `${selectedSource.name.replace(/\s+/g, "-")}-guvoice.wav`;
+        anchor.download = `${selectedSource.name.replace(/\s+/g, "-")}-guvoice.mp3`;
         anchor.click();
       }
       setNotice(result.path ? `${result.message}: ${result.path}` : result.message);

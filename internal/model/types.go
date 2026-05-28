@@ -208,12 +208,15 @@ type MissingSampleReport struct {
 }
 
 type SynthesisRequest struct {
-	SourceID   string  `json:"sourceId"`
-	Text       string  `json:"text"`
-	Format     string  `json:"format"`
-	OutputName string  `json:"outputName"`
-	SampleRate int     `json:"sampleRate"`
-	Speed      float64 `json:"speed"`
+	SourceID       string  `json:"sourceId"`
+	Text           string  `json:"text"`
+	Format         string  `json:"format"`
+	OutputName     string  `json:"outputName"`
+	SampleRate     int     `json:"sampleRate"`
+	Speed          float64 `json:"speed"`
+	Pitch          float64 `json:"pitch"`
+	Clarity        float64 `json:"clarity"`
+	NoiseReduction float64 `json:"noiseReduction"`
 }
 
 type SynthesisResult struct {

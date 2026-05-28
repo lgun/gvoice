@@ -8,12 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/braheezy/shine-mp3/pkg/mp3"
 )
 
 type Options struct {
-	SampleRate int
-	Speed      float64
-	GapMillis  int
+	SampleRate     int
+	Speed          float64
+	Pitch          float64
+	Clarity        float64
+	NoiseReduction float64
+	GapMillis      int
 }
 
 type Buffer struct {
@@ -88,6 +93,13 @@ func DecodeWAV(data []byte, name string) (Buffer, error) {
 	if !seenFmt || len(dataChunk) == 0 {
 		return Buffer{}, fmt.Errorf("wav fmt/data chunk is missing in %s", name)
 	}
+	if audioFormat == 0xFFFE {
+		var err error
+		audioFormat, err = extensibleAudioFormat(data, name)
+		if err != nil {
+			return Buffer{}, err
+		}
+	}
 	if audioFormat != 1 {
 		return Buffer{}, fmt.Errorf("%s uses unsupported wav format %d; PCM is required", name, audioFormat)
 	}
@@ -120,6 +132,29 @@ func DecodeWAV(data []byte, name string) (Buffer, error) {
 }
 
 func WriteSequenceWAV(path string, steps []SequenceStep, opts Options) (int, error) {
+	buffer, duration, err := RenderSequence(steps, opts)
+	if err != nil {
+		return 0, err
+	}
+	if err := WriteWAV(path, buffer.SampleRate, buffer.Samples); err != nil {
+		return 0, err
+	}
+	return duration, nil
+}
+
+func WriteSequenceMP3(path string, steps []SequenceStep, opts Options) (int, error) {
+	opts.SampleRate = normalizedMP3SampleRate(opts.SampleRate)
+	buffer, duration, err := RenderSequence(steps, opts)
+	if err != nil {
+		return 0, err
+	}
+	if err := WriteMP3(path, buffer.SampleRate, buffer.Samples); err != nil {
+		return 0, err
+	}
+	return duration, nil
+}
+
+func RenderSequence(steps []SequenceStep, opts Options) (Buffer, int, error) {
 	sampleRate := normalizedSampleRate(opts.SampleRate)
 	speed := normalizedSpeed(opts.Speed)
 	gapMillis := opts.GapMillis
@@ -134,16 +169,19 @@ func WriteSequenceWAV(path string, steps []SequenceStep, opts Options) (int, err
 			continue
 		}
 		if step.Path == "" {
-			return 0, fmt.Errorf("sample path is empty for %s", step.PromptID)
+			return Buffer{}, 0, fmt.Errorf("sample path is empty for %s", step.PromptID)
 		}
 		buffer, err := ReadWAV(step.Path)
 		if err != nil {
-			return 0, err
+			return Buffer{}, 0, err
 		}
 		pcm := resample(buffer.Samples, buffer.SampleRate, sampleRate)
-		pcm = trimSilence(pcm, sampleRate)
+		pcm = applyNoiseReduction(pcm, opts.NoiseReduction)
+		pcm = trimSilenceWithThreshold(pcm, sampleRate, silenceThreshold(opts.NoiseReduction))
+		pcm = applyPitchShift(pcm, opts.Pitch)
 		stepSpeed := speed * normalizedStepSpeed(step.Speed) / normalizedStretch(step.Stretch)
 		pcm = resampleForSpeedFactor(pcm, stepSpeed)
+		pcm = applyClarity(pcm, opts.Clarity)
 		applyGain(pcm, normalizedGain(step.Gain))
 		applyFade(pcm, sampleRate)
 
@@ -159,12 +197,9 @@ func WriteSequenceWAV(path string, steps []SequenceStep, opts Options) (int, err
 	}
 
 	if len(output) == 0 {
-		return 0, errors.New("synthesis produced no audio")
+		return Buffer{}, 0, errors.New("synthesis produced no audio")
 	}
-	if err := WriteWAV(path, sampleRate, output); err != nil {
-		return 0, err
-	}
-	return len(output) * 1000 / sampleRate, nil
+	return Buffer{SampleRate: sampleRate, Samples: output}, len(output) * 1000 / sampleRate, nil
 }
 
 func WriteWAV(path string, sampleRate int, pcm []int16) error {
@@ -228,11 +263,53 @@ func WriteWAV(path string, sampleRate int, pcm []int16) error {
 	return nil
 }
 
+func WriteMP3(path string, sampleRate int, pcm []int16) error {
+	if len(pcm) == 0 {
+		return errors.New("pcm is empty")
+	}
+	sourceRate := normalizedSampleRate(sampleRate)
+	sampleRate = normalizedMP3SampleRate(sourceRate)
+	pcm = resample(pcm, sourceRate, sampleRate)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoderInput := shineMonoInput(pcm, sampleRate)
+	encoder := mp3.NewEncoder(sampleRate, 1)
+	return encoder.Write(file, encoderInput)
+}
+
 func normalizedSampleRate(value int) int {
 	if value <= 0 {
 		return 44100
 	}
 	return value
+}
+
+func normalizedMP3SampleRate(value int) int {
+	supported := []int{44100, 48000, 32000, 22050, 24000, 16000, 11025, 12000, 8000}
+	if value <= 0 {
+		return 44100
+	}
+	for _, sampleRate := range supported {
+		if value == sampleRate {
+			return value
+		}
+	}
+	best := supported[0]
+	bestDistance := absInt(value - best)
+	for _, sampleRate := range supported[1:] {
+		if distance := absInt(value - sampleRate); distance < bestDistance {
+			best = sampleRate
+			bestDistance = distance
+		}
+	}
+	return best
 }
 
 func normalizedSpeed(value float64) float64 {
@@ -302,10 +379,13 @@ func appendSilence(output []int16, sampleRate int, millis int) []int16 {
 }
 
 func trimSilence(pcm []int16, sampleRate int) []int16 {
+	return trimSilenceWithThreshold(pcm, sampleRate, 420)
+}
+
+func trimSilenceWithThreshold(pcm []int16, sampleRate int, threshold int) []int16 {
 	if len(pcm) == 0 {
 		return pcm
 	}
-	threshold := 420
 	start := 0
 	for start < len(pcm) && abs16(pcm[start]) < threshold {
 		start++
@@ -329,6 +409,11 @@ func trimSilence(pcm []int16, sampleRate int) []int16 {
 		end = len(pcm) - 1
 	}
 	return append([]int16(nil), pcm[start:end+1]...)
+}
+
+func silenceThreshold(noiseReduction float64) int {
+	level := clampFloat64(noiseReduction, 0, 100) / 100
+	return int(math.Round(260 + level*720))
 }
 
 func resample(pcm []int16, srcRate int, dstRate int) []int16 {
@@ -397,6 +482,92 @@ func applyGain(pcm []int16, gain float64) {
 	}
 }
 
+func applyPitchShift(pcm []int16, semitones float64) []int16 {
+	if len(pcm) == 0 {
+		return nil
+	}
+	semitones = clampFloat64(semitones, -12, 12)
+	if math.Abs(semitones) < 0.001 {
+		return append([]int16(nil), pcm...)
+	}
+	factor := math.Pow(2, semitones/12)
+	shifted := resampleForSpeedFactor(pcm, factor)
+	if len(shifted) == 0 {
+		return append([]int16(nil), pcm...)
+	}
+	return interpolate(shifted, len(pcm), float64(len(shifted)-1)/float64(max(1, len(pcm)-1)))
+}
+
+func applyClarity(pcm []int16, clarity float64) []int16 {
+	if len(pcm) == 0 {
+		return nil
+	}
+	level := clampFloat64(clarity, 0, 100) / 100
+	output := append([]int16(nil), pcm...)
+	if level <= 0 {
+		return output
+	}
+
+	var previousIn float64
+	var previousOut float64
+	alpha := 0.965 - level*0.12
+	if alpha < 0.72 {
+		alpha = 0.72
+	}
+	for i, sample := range output {
+		current := float64(sample)
+		high := alpha * (previousOut + current - previousIn)
+		mixed := current*(1-level*0.45) + high*(level*0.75)
+		output[i] = clampInt16(mixed)
+		previousIn = current
+		previousOut = high
+	}
+
+	targetPeak := int(15000 + level*9000)
+	normalizePeak(output, targetPeak)
+	return output
+}
+
+func applyNoiseReduction(pcm []int16, noiseReduction float64) []int16 {
+	if len(pcm) == 0 {
+		return nil
+	}
+	level := clampFloat64(noiseReduction, 0, 100) / 100
+	if level <= 0 {
+		return append([]int16(nil), pcm...)
+	}
+	threshold := int(math.Round(140 + level*980))
+	output := make([]int16, len(pcm))
+	for i, sample := range pcm {
+		peak := abs16(sample)
+		switch {
+		case peak < threshold:
+			output[i] = 0
+		case peak < threshold*2:
+			output[i] = int16(float64(sample) * (0.35 + level*0.25))
+		default:
+			output[i] = sample
+		}
+	}
+	return output
+}
+
+func normalizePeak(pcm []int16, targetPeak int) {
+	if len(pcm) == 0 || targetPeak <= 0 {
+		return
+	}
+	peak := 0
+	for _, sample := range pcm {
+		if value := abs16(sample); value > peak {
+			peak = value
+		}
+	}
+	if peak == 0 || peak >= targetPeak {
+		return
+	}
+	applyGain(pcm, float64(targetPeak)/float64(peak))
+}
+
 func applyFade(pcm []int16, sampleRate int) {
 	if len(pcm) == 0 {
 		return
@@ -415,4 +586,103 @@ func abs16(value int16) int {
 		return -int(value)
 	}
 	return int(value)
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func clampFloat64(value float64, minValue float64, maxValue float64) float64 {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func clampInt16(value float64) int16 {
+	rounded := int(math.Round(value))
+	if rounded > 32767 {
+		return 32767
+	}
+	if rounded < -32768 {
+		return -32768
+	}
+	return int16(rounded)
+}
+
+func shineMonoInput(pcm []int16, sampleRate int) []int16 {
+	frameSamples := shineSamplesPerPass(sampleRate)
+	blocks := (len(pcm) + frameSamples - 1) / frameSamples
+	output := make([]int16, 0, blocks*frameSamples*2)
+	for offset := 0; offset < len(pcm); offset += frameSamples {
+		end := offset + frameSamples
+		block := make([]int16, frameSamples)
+		if end > len(pcm) {
+			copy(block, pcm[offset:])
+		} else {
+			copy(block, pcm[offset:end])
+		}
+		output = append(output, block...)
+		output = append(output, block...)
+	}
+	return output
+}
+
+func shineSamplesPerPass(sampleRate int) int {
+	switch normalizedMP3SampleRate(sampleRate) {
+	case 32000, 44100, 48000:
+		return mp3.SHINE_MAX_SAMPLES
+	default:
+		return mp3.SHINE_MAX_SAMPLES / 2
+	}
+}
+
+func extensibleAudioFormat(data []byte, name string) (uint16, error) {
+	offset := 12
+	for offset+8 <= len(data) {
+		chunkID := string(data[offset : offset+4])
+		chunkSize := int(binary.LittleEndian.Uint32(data[offset+4 : offset+8]))
+		offset += 8
+		if chunkSize < 0 || offset+chunkSize > len(data) {
+			return 0, fmt.Errorf("invalid wav chunk size in %s", name)
+		}
+		if chunkID == "fmt " {
+			chunk := data[offset : offset+chunkSize]
+			if len(chunk) < 40 {
+				return 0, fmt.Errorf("invalid WAVE_FORMAT_EXTENSIBLE fmt chunk in %s", name)
+			}
+			validBits := binary.LittleEndian.Uint16(chunk[18:20])
+			if validBits != 0 && validBits != 16 {
+				return 0, fmt.Errorf("%s uses %d valid bits; 16-bit PCM is required", name, validBits)
+			}
+			if !isPCMSubformat(chunk[24:40]) {
+				return 0, fmt.Errorf("%s uses unsupported WAVE_FORMAT_EXTENSIBLE subtype; PCM is required", name)
+			}
+			return 1, nil
+		}
+		offset += chunkSize
+		if chunkSize%2 == 1 {
+			offset++
+		}
+	}
+	return 0, fmt.Errorf("wav fmt chunk is missing in %s", name)
+}
+
+func isPCMSubformat(guid []byte) bool {
+	pcmGUID := []byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+	if len(guid) != len(pcmGUID) {
+		return false
+	}
+	for i := range pcmGUID {
+		if guid[i] != pcmGUID[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -11,7 +11,8 @@
 - 소스가 목표 샘플 수만큼 채워지기 전까지 미리듣기/저장 차단
 - Wails 바인딩이 없을 때도 동작하는 브라우저 localStorage fallback
 - Go 백엔드의 앱 데이터 폴더 저장
-- 녹음된 WAV 샘플을 promptId 순서로 이어 붙이는 미리듣기/저장
+- 녹음된 WAV 샘플을 promptId 순서로 이어 붙이는 미리듣기와 실제 MP3 저장
+- 업로드한 `audio/*` 파일을 Web Audio로 디코딩한 뒤 mono 16-bit WAV 샘플로 변환
 
 녹음은 외부 앱을 쓰지 않고 앱 안에서 진행합니다. `녹음` 탭에서 `녹음 시작`을 누르면 목소리 소스가 없을 때 자동으로 만들고, WebView2/브라우저 마이크 권한을 요청한 뒤 정지 시 mono 16-bit WAV 샘플로 저장합니다. MVP에서는 한 번 녹음한 파일을 자동으로 여러 음절로 분할하지 않습니다. `아`, `어`, `가`처럼 화면에 표시된 한 항목을 하나씩 녹음합니다.
 
@@ -58,8 +59,10 @@ wails build
 
 ## 제한
 
-현재 음성 합성은 필수 promptId에 해당하는 실제 WAV 샘플이 모두 있을 때만 동작합니다. 한글 입력은 최소 매핑으로 promptId 시퀀스로 변환되고, 백엔드가 해당 WAV들을 trim/resample/fade 처리 후 이어 붙여 결과 WAV를 만듭니다. MVP 저장 버튼은 WAV 파일 저장으로 동작합니다. 다음 단계에서 ffmpeg 번들 또는 Go MP3 인코더를 연결하면 실제 MP3 export로 바꿀 수 있습니다.
+현재 음성 합성은 필수 promptId에 해당하는 실제 샘플이 모두 있을 때만 동작합니다. 한글 입력은 최소 매핑으로 promptId 시퀀스로 변환되고, 백엔드가 해당 WAV들을 trim/resample/fade 처리 후 이어 붙입니다. 미리듣기는 WAV 데이터 URL을 사용하고, 저장은 CGO-free pure Go `github.com/braheezy/shine-mp3/pkg/mp3` 인코더로 실제 `.mp3` 파일을 만듭니다.
 
-WAV 디코더는 현재 RIFF/WAVE 16-bit PCM을 지원합니다. 앱 자체 녹음은 이 형식으로 저장되며, WAVE_FORMAT_EXTENSIBLE 업로드 지원은 후속 작업입니다.
+WAV 디코더는 RIFF/WAVE 16-bit PCM과 WAVE_FORMAT_EXTENSIBLE PCM subtype을 지원합니다. 앱 자체 녹음은 mono 16-bit WAV로 저장됩니다. 업로드는 WebView2/브라우저가 `decodeAudioData`로 읽을 수 있는 오디오만 변환할 수 있으며, 지원하지 않는 코덱은 명확한 오류를 표시합니다.
+
+속도, 피치, 명료도, 노이즈 억제 옵션은 샘플 기반 PCM에 적용되는 간단 DSP 근사입니다. 자연스러운 보컬 피치 보정이나 전문 노이즈 제거 품질을 목표로 하지는 않습니다.
 
 Prosody punctuation: spaces create short clamped pauses; commas, periods, and sentence marks add distinct pause lengths; `!` emphasizes the previous sample; `?` gives the previous ending a slower/stretched question feel; `~` stretches the previous sample with a cap for repeats. These marks never count as missing samples.
