@@ -1,6 +1,6 @@
 export type SourceOrigin = "recording" | "upload";
 
-export type TabId = "speak" | "record" | "manage";
+export type TabId = "speak" | "record" | "library" | "manage";
 
 export interface VoiceSample {
   id: string;
@@ -80,6 +80,31 @@ export interface OutputDirectorySettings {
   isDefault: boolean;
   source: "wails" | "browser";
   message: string;
+}
+
+export interface SpeechLibrarySettings {
+  path: string;
+  defaultPath: string;
+  isDefault: boolean;
+  source: "wails" | "browser";
+  message: string;
+}
+
+export interface SpeechItem {
+  id: string;
+  sourceId: string;
+  sourceName: string;
+  title?: string;
+  text: string;
+  duration: number;
+  createdAt: string;
+  audioName?: string;
+  audioUrl?: string;
+  path?: string;
+}
+
+export interface SaveSpeechItemInput extends SynthesisRequest {
+  sourceName?: string;
 }
 
 export interface SamplePrompt {

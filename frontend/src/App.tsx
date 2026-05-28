@@ -9,6 +9,8 @@ import {
   OutputDirectorySettings,
   PreviewResult,
   SAMPLE_PROMPTS,
+  SpeechItem,
+  SpeechLibrarySettings,
   SamplePrompt,
   SynthesisOptions,
   TabId,
@@ -39,6 +41,17 @@ const formatDate = (value: string) => {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
+};
+
+const formatDuration = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "-";
+  }
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${minutes}:${rest}`;
 };
 
 const requiredPromptsFor = (source?: VoiceSource) =>
@@ -138,6 +151,7 @@ function Tabs({
   const tabs: Array<{ id: TabId; label: string }> = [
     { id: "speak", label: "말하기" },
     { id: "record", label: "녹음" },
+    { id: "library", label: "보관함" },
     { id: "manage", label: "소스 관리" }
   ];
 
@@ -170,8 +184,10 @@ function SpeakTab({
   preview,
   isSynthesizing,
   isExporting,
+  isSavingToLibrary,
   onPreview,
   onExport,
+  onSaveToLibrary,
   onGoRecord
 }: {
   selectedSource?: VoiceSource;
@@ -184,8 +200,10 @@ function SpeakTab({
   preview: PreviewResult | null;
   isSynthesizing: boolean;
   isExporting: boolean;
+  isSavingToLibrary: boolean;
   onPreview: () => void;
   onExport: () => void;
+  onSaveToLibrary: () => void;
   onGoRecord: () => void;
 }) {
   const sampleCount = filledCountOf(selectedSource);
@@ -194,6 +212,7 @@ function SpeakTab({
   const sourceComplete = Boolean(selectedSource && sampleCount >= targetCount);
   const canPreview = Boolean(selectedSource && text.trim() && sourceComplete && !hasBlockingMissing);
   const canExport = Boolean(preview?.audioUrl || preview?.status === "ready");
+  const canSaveToLibrary = canPreview;
 
   const previewHint = !selectedSource
     ? "목소리 소스를 만들거나 선택하세요."
@@ -291,6 +310,9 @@ function SpeakTab({
         </button>
         <button type="button" onClick={onExport} disabled={!canExport || isExporting}>
           {isExporting ? "저장 중" : "MP3 저장"}
+        </button>
+        <button type="button" onClick={onSaveToLibrary} disabled={!canSaveToLibrary || isSavingToLibrary}>
+          {isSavingToLibrary ? "보관 중" : "보관함 저장"}
         </button>
         <span className="button-state">{preview?.message ?? previewHint}</span>
       </div>
@@ -787,6 +809,183 @@ function RecordTab({
   );
 }
 
+function LibraryTab({
+  speechItems,
+  speechLibrarySettings,
+  onSetSpeechLibraryDirectory,
+  onChooseSpeechLibraryDirectory,
+  onGetSpeechItemAudio,
+  onDeleteSpeechItem
+}: {
+  speechItems: SpeechItem[];
+  speechLibrarySettings: SpeechLibrarySettings | null;
+  onSetSpeechLibraryDirectory: (path: string) => Promise<void>;
+  onChooseSpeechLibraryDirectory: () => Promise<void>;
+  onGetSpeechItemAudio: (id: string) => Promise<string>;
+  onDeleteSpeechItem: (id: string) => Promise<void>;
+}) {
+  const [libraryPath, setLibraryPath] = useState("");
+  const [activeItemId, setActiveItemId] = useState("");
+  const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
+  const [loadingAudioId, setLoadingAudioId] = useState("");
+  const [audioErrors, setAudioErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setLibraryPath(speechLibrarySettings?.isDefault ? "" : speechLibrarySettings?.path ?? "");
+  }, [speechLibrarySettings?.isDefault, speechLibrarySettings?.path]);
+
+  const submitLibraryDirectory = async (event: FormEvent) => {
+    event.preventDefault();
+    await onSetSpeechLibraryDirectory(libraryPath);
+  };
+
+  const libraryPathPlaceholder = speechLibrarySettings?.defaultPath
+    ? `비워두면 기본 보관함 폴더를 사용합니다: ${speechLibrarySettings.defaultPath}`
+    : "비워두면 기본 말하기 보관함 폴더를 사용합니다.";
+
+  const prepareAudio = async (item: SpeechItem) => {
+    if (audioUrls[item.id] || item.audioUrl || loadingAudioId === item.id) {
+      setActiveItemId(item.id);
+      return;
+    }
+
+    setActiveItemId(item.id);
+    setLoadingAudioId(item.id);
+    setAudioErrors((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+
+    try {
+      const audioUrl = await onGetSpeechItemAudio(item.id);
+      setAudioUrls((current) => ({ ...current, [item.id]: audioUrl }));
+    } catch (error) {
+      setAudioErrors((current) => ({
+        ...current,
+        [item.id]: error instanceof Error ? error.message : "오디오를 불러오지 못했습니다."
+      }));
+    } finally {
+      setLoadingAudioId((current) => (current === item.id ? "" : current));
+    }
+  };
+
+  return (
+    <section className="work-surface library-surface">
+      <form className="library-settings" onSubmit={submitLibraryDirectory}>
+        <div className="section-head compact">
+          <div>
+            <FieldLabel>앱 안 보관</FieldLabel>
+            <h2>말하기 저장 폴더</h2>
+          </div>
+          <div className="button-pair">
+            <button type="button" onClick={onChooseSpeechLibraryDirectory}>
+              찾아보기
+            </button>
+            <button className="primary" type="submit">
+              저장
+            </button>
+          </div>
+        </div>
+        <label>
+          <FieldLabel>보관함 폴더 경로</FieldLabel>
+          <input
+            value={libraryPath}
+            onChange={(event) => setLibraryPath(event.target.value)}
+            placeholder={libraryPathPlaceholder}
+          />
+        </label>
+        <p className="info-line">
+          {speechLibrarySettings?.message ??
+            "현재 말하기 결과를 앱 보관함 폴더에 저장하고 이 목록에서 다시 재생합니다."}
+          {speechLibrarySettings?.isDefault && speechLibrarySettings.defaultPath
+            ? ` 기본 보관함: ${speechLibrarySettings.defaultPath}`
+            : ""}
+          {speechLibrarySettings?.source === "browser"
+            ? " 브라우저 데모 값은 localStorage와 데모 WAV로만 동작합니다."
+            : ""}
+        </p>
+      </form>
+
+      <div className="library-list-panel">
+        <div className="section-head compact">
+          <div>
+            <FieldLabel>재생목록</FieldLabel>
+            <h2>저장된 말하기 {speechItems.length}개</h2>
+          </div>
+        </div>
+
+        <div className="speech-list">
+          {speechItems.length ? (
+            speechItems.map((item) => {
+              const title = item.title?.trim() || item.text.trim() || "저장된 말하기";
+              const audioUrl = audioUrls[item.id] || item.audioUrl || "";
+              const hasPlayableAudio = Boolean(audioUrl);
+              const isAudioLoading = loadingAudioId === item.id;
+              const audioError = audioErrors[item.id];
+              return (
+                <article
+                  className={`speech-item ${activeItemId === item.id ? "is-playing" : ""}`}
+                  key={item.id}
+                  onClick={() => setActiveItemId(item.id)}
+                >
+                  <div className="speech-item-head">
+                    <div>
+                      <strong>{title}</strong>
+                      <span>
+                        {item.sourceName} · {formatDate(item.createdAt)} · {formatDuration(item.duration)}
+                        {item.audioName ? ` · ${item.audioName}` : item.path ? ` · ${item.path}` : ""}
+                      </span>
+                    </div>
+                    <button
+                      className="danger"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteSpeechItem(item.id);
+                      }}
+                    >
+                      삭제
+                    </button>
+                  </div>
+                  <p>{item.text}</p>
+                  {hasPlayableAudio ? (
+                    <audio
+                      controls
+                      src={audioUrl}
+                      onPlay={() => setActiveItemId(item.id)}
+                    >
+                      <track kind="captions" />
+                    </audio>
+                  ) : (
+                    <button
+                      className="audio-load-button"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        prepareAudio(item);
+                      }}
+                      disabled={isAudioLoading}
+                    >
+                      <span>{isAudioLoading ? "오디오 불러오는 중" : "재생 준비"}</span>
+                      <small>{audioError || "누르면 보관함 오디오를 불러옵니다."}</small>
+                    </button>
+                  )}
+                </article>
+              );
+            })
+          ) : (
+            <div className="library-empty">
+              <strong>저장된 말하기가 없습니다.</strong>
+              <span>말하기 탭에서 현재 문장을 만든 뒤 보관함 저장을 누르세요.</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ManageTab({
   selectedSource,
   outputDirectory,
@@ -1062,8 +1261,11 @@ export default function App() {
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isSavingToLibrary, setIsSavingToLibrary] = useState(false);
   const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
   const [outputDirectory, setOutputDirectory] = useState<OutputDirectorySettings | null>(null);
+  const [speechLibrarySettings, setSpeechLibrarySettings] = useState<SpeechLibrarySettings | null>(null);
+  const [speechItems, setSpeechItems] = useState<SpeechItem[]>([]);
   const [notice, setNotice] = useState("");
 
   const selectedSource = useMemo(
@@ -1078,10 +1280,16 @@ export default function App() {
     setSelectedSourceId(nextSources.some((source) => source.id === nextSelectedId) ? nextSelectedId : nextSources[0]?.id || "");
   };
 
+  const refreshSpeechItems = async () => {
+    setSpeechItems(await voiceApi.listSpeechItems());
+  };
+
   useEffect(() => {
     refreshSources();
+    refreshSpeechItems();
     voiceApi.getEngineStatus().then(setEngineStatus);
     voiceApi.getOutputDirectory().then(setOutputDirectory);
+    voiceApi.getSpeechLibrarySettings().then(setSpeechLibrarySettings);
   }, []);
 
   useEffect(() => {
@@ -1206,6 +1414,36 @@ export default function App() {
     }
   };
 
+  const handleSetSpeechLibraryDirectory = async (path: string) => {
+    try {
+      const settings = await voiceApi.setSpeechLibraryDirectory(path);
+      setSpeechLibrarySettings(settings);
+      setNotice(settings.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "말하기 저장 폴더를 저장하지 못했습니다.");
+    }
+  };
+
+  const handleChooseSpeechLibraryDirectory = async () => {
+    try {
+      const settings = await voiceApi.chooseSpeechLibraryDirectory();
+      setSpeechLibrarySettings(settings);
+      setNotice(settings.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "말하기 저장 폴더를 선택하지 못했습니다.");
+    }
+  };
+
+  const handleDeleteSpeechItem = async (id: string) => {
+    await voiceApi.deleteSpeechItem(id);
+    await refreshSpeechItems();
+    setNotice("보관함 항목을 삭제했습니다.");
+  };
+
+  const handleGetSpeechItemAudio = async (id: string) => {
+    return voiceApi.getSpeechItemAudio(id);
+  };
+
   const handlePreview = async () => {
     if (!selectedSource || !text.trim()) {
       return;
@@ -1247,6 +1485,26 @@ export default function App() {
     }
   };
 
+  const handleSaveSpeechItem = async () => {
+    if (!selectedSource || !text.trim()) {
+      return;
+    }
+    setIsSavingToLibrary(true);
+    try {
+      const item = await voiceApi.saveSpeechItem({
+        sourceId: selectedSource.id,
+        text,
+        options
+      });
+      await refreshSpeechItems();
+      setNotice(item.path ? `보관함에 저장했습니다: ${item.path}` : "보관함에 저장했습니다.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "보관함에 저장하지 못했습니다.");
+    } finally {
+      setIsSavingToLibrary(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <SourceList
@@ -1280,8 +1538,10 @@ export default function App() {
               preview={preview}
               isSynthesizing={isSynthesizing}
               isExporting={isExporting}
+              isSavingToLibrary={isSavingToLibrary}
               onPreview={handlePreview}
               onExport={handleExport}
+              onSaveToLibrary={handleSaveSpeechItem}
               onGoRecord={() => setActiveTab("record")}
             />
           ) : null}
@@ -1292,6 +1552,17 @@ export default function App() {
               onEnsureSource={ensureRecordSource}
               onAddSample={handleAddSample}
               onDeleteSample={handleDeleteSample}
+            />
+          ) : null}
+
+          {activeTab === "library" ? (
+            <LibraryTab
+              speechItems={speechItems}
+              speechLibrarySettings={speechLibrarySettings}
+              onSetSpeechLibraryDirectory={handleSetSpeechLibraryDirectory}
+              onChooseSpeechLibraryDirectory={handleChooseSpeechLibraryDirectory}
+              onGetSpeechItemAudio={handleGetSpeechItemAudio}
+              onDeleteSpeechItem={handleDeleteSpeechItem}
             />
           ) : null}
 

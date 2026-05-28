@@ -8,6 +8,9 @@ import {
   OutputDirectorySettings,
   PreviewResult,
   SAMPLE_PROMPTS,
+  SaveSpeechItemInput,
+  SpeechItem,
+  SpeechLibrarySettings,
   SynthesisRequest,
   VoiceSample,
   VoiceSource
@@ -18,6 +21,22 @@ type CreateSourceInput = Partial<
 >;
 
 type AddSampleInput = Omit<VoiceSample, "id" | "createdAt">;
+
+type LegacySpeechItem = Partial<SpeechItem> & {
+  durationMillis?: number;
+  durationSeconds?: number;
+  fileName?: string;
+  title?: string;
+  AudioURL?: string;
+  AudioUrl?: string;
+  CreatedAt?: string;
+  FileName?: string;
+  SourceID?: string;
+  SourceName?: string;
+  Title?: string;
+  Duration?: number;
+  DurationMillis?: number;
+};
 
 interface WailsApp {
   ListSources?: () => Promise<VoiceSource[]> | VoiceSource[];
@@ -51,6 +70,22 @@ interface WailsApp {
     | Promise<Partial<OutputDirectorySettings> | string>
     | Partial<OutputDirectorySettings>
     | string;
+  GetSpeechLibrarySettings?: () =>
+    | Promise<Partial<SpeechLibrarySettings> | string>
+    | Partial<SpeechLibrarySettings>
+    | string;
+  SetSpeechLibraryDirectory?: (
+    path: string
+  ) => Promise<Partial<SpeechLibrarySettings> | string> | Partial<SpeechLibrarySettings> | string;
+  ChooseSpeechLibraryDirectory?: () =>
+    | Promise<Partial<SpeechLibrarySettings> | string>
+    | Partial<SpeechLibrarySettings>
+    | string;
+  ListSpeechItems?: () => Promise<SpeechItem[]> | SpeechItem[];
+  GetSpeechItemAudio?: (id: string) => Promise<string> | string;
+  GetSpeechItemAudioURL?: (id: string) => Promise<string> | string;
+  SaveSpeechItem?: (input: SaveSpeechItemInput) => Promise<SpeechItem> | SpeechItem;
+  DeleteSpeechItem?: (id: string) => Promise<void> | void;
 }
 
 declare global {
@@ -65,6 +100,8 @@ declare global {
 
 const STORAGE_KEY = "guvoice.sources.v3";
 const OUTPUT_DIRECTORY_KEY = "guvoice.outputDirectory.v1";
+const SPEECH_LIBRARY_KEY = "guvoice.speechLibrary.items.v1";
+const SPEECH_LIBRARY_DIRECTORY_KEY = "guvoice.speechLibrary.directory.v1";
 
 const nowIso = () => new Date().toISOString();
 
@@ -160,6 +197,90 @@ const normalizeOutputDirectory = (
     source: value?.source ?? source,
     message: value?.message ?? (isDefault ? "기본 저장 위치를 사용합니다." : "저장 위치를 불러왔습니다.")
   };
+};
+
+const normalizeSpeechLibrarySettings = (
+  value?: Partial<SpeechLibrarySettings> | string | null,
+  source: SpeechLibrarySettings["source"] = hasWails() ? "wails" : "browser"
+): SpeechLibrarySettings => {
+  if (typeof value === "string") {
+    const path = value.trim();
+    return {
+      path,
+      defaultPath: "",
+      isDefault: !path,
+      source,
+      message: path ? "말하기 저장 폴더를 불러왔습니다." : "기본 말하기 저장 폴더를 사용합니다."
+    };
+  }
+
+  const path = value?.path?.trim() ?? "";
+  const defaultPath = value?.defaultPath?.trim() ?? "";
+  const isDefault = value?.isDefault ?? !path;
+  return {
+    path: isDefault ? "" : path,
+    defaultPath,
+    isDefault,
+    source: value?.source ?? source,
+    message:
+      value?.message ??
+      (isDefault ? "기본 말하기 저장 폴더를 사용합니다." : "말하기 저장 폴더를 불러왔습니다.")
+  };
+};
+
+const normalizeSpeechItem = (item: LegacySpeechItem): SpeechItem => {
+  const duration =
+    Number.isFinite(item.duration) && item.duration !== undefined
+      ? item.duration
+      : Number.isFinite(item.Duration) && item.Duration !== undefined
+        ? item.Duration
+        : Number.isFinite(item.durationSeconds) && item.durationSeconds !== undefined
+          ? item.durationSeconds
+          : Number.isFinite(item.durationMillis) && item.durationMillis !== undefined
+            ? item.durationMillis / 1000
+            : Number.isFinite(item.DurationMillis) && item.DurationMillis !== undefined
+              ? item.DurationMillis / 1000
+              : 0;
+  const title = item.title?.trim() || item.Title?.trim() || "";
+  const text = item.text?.trim() || title;
+  const sourceName = item.sourceName?.trim() || item.SourceName?.trim() || "이름 없는 소스";
+
+  return {
+    ...item,
+    id: item.id || createId("speech"),
+    sourceId: item.sourceId || item.SourceID || "",
+    sourceName,
+    title: title || undefined,
+    text,
+    duration,
+    createdAt: item.createdAt || item.CreatedAt || nowIso(),
+    audioName: item.audioName || item.fileName || item.FileName,
+    audioUrl: item.audioUrl || item.AudioURL || item.AudioUrl,
+    path: item.path
+  };
+};
+
+const readSpeechItems = (): SpeechItem[] => {
+  const raw = localStorage.getItem(SPEECH_LIBRARY_KEY);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as SpeechItem[];
+    return Array.isArray(parsed) ? parsed.map(normalizeSpeechItem) : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeSpeechItems = (items: SpeechItem[]) => {
+  localStorage.setItem(SPEECH_LIBRARY_KEY, JSON.stringify(items.map(normalizeSpeechItem)));
+};
+
+const speechTitleFromText = (text: string) => {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  return normalized.length > 28 ? `${normalized.slice(0, 28)}...` : normalized;
 };
 
 const extractTokens = (text: string) => {
@@ -259,6 +380,8 @@ const createDemoWav = (text: string) => {
 
   return `data:audio/wav;base64,${btoa(binary)}`;
 };
+
+const demoSpeechDuration = (text: string) => Math.min(2.2, Math.max(0.8, text.length / 34));
 
 const fallbackApi = {
   async listSources() {
@@ -372,9 +495,63 @@ const fallbackApi = {
 
   async chooseOutputDirectory() {
     return {
-      ...(await this.getOutputDirectory()),
+      ...(await fallbackApi.getOutputDirectory()),
       message: "브라우저 데모에서는 폴더 선택 창을 열 수 없습니다. 경로를 직접 입력해 주세요."
     } satisfies OutputDirectorySettings;
+  },
+
+  async getSpeechLibrarySettings() {
+    return normalizeSpeechLibrarySettings(
+      localStorage.getItem(SPEECH_LIBRARY_DIRECTORY_KEY) ?? "",
+      "browser"
+    );
+  },
+
+  async setSpeechLibraryDirectory(path: string) {
+    const trimmed = path.trim();
+    localStorage.setItem(SPEECH_LIBRARY_DIRECTORY_KEY, trimmed);
+    return normalizeSpeechLibrarySettings(trimmed, "browser");
+  },
+
+  async chooseSpeechLibraryDirectory() {
+    return {
+      ...(await fallbackApi.getSpeechLibrarySettings()),
+      message: "브라우저 데모에서는 말하기 저장 폴더 선택 창을 열 수 없습니다. 경로를 직접 입력해 주세요."
+    } satisfies SpeechLibrarySettings;
+  },
+
+  async listSpeechItems() {
+    return readSpeechItems();
+  },
+
+  async getSpeechItemAudio(id: string) {
+    const item = readSpeechItems().find((speechItem) => speechItem.id === id);
+    return item?.audioUrl || createDemoWav(item?.text || item?.title || "guvoice");
+  },
+
+  async saveSpeechItem(input: SaveSpeechItemInput) {
+    const sourceName =
+      input.sourceName?.trim() ||
+      readSources().find((source) => source.id === input.sourceId)?.name ||
+      "구보이스";
+    const item: SpeechItem = {
+      id: createId("speech"),
+      sourceId: input.sourceId,
+      sourceName,
+      title: speechTitleFromText(input.text),
+      text: input.text,
+      duration: demoSpeechDuration(input.text),
+      createdAt: nowIso(),
+      audioName: `${sourceName.replace(/\s+/g, "-") || "guvoice"}-${Date.now()}.wav`,
+      audioUrl: createDemoWav(input.text)
+    };
+    const items = [item, ...readSpeechItems()];
+    writeSpeechItems(items);
+    return item;
+  },
+
+  async deleteSpeechItem(id: string) {
+    writeSpeechItems(readSpeechItems().filter((item) => item.id !== id));
   }
 };
 
@@ -436,5 +613,44 @@ export const voiceApi = {
   chooseOutputDirectory: () =>
     callWails("ChooseOutputDirectory", fallbackApi.chooseOutputDirectory).then((value) =>
       normalizeOutputDirectory(value)
-    )
+    ),
+
+  getSpeechLibrarySettings: () =>
+    callWails("GetSpeechLibrarySettings", fallbackApi.getSpeechLibrarySettings).then((value) =>
+      normalizeSpeechLibrarySettings(value)
+    ),
+
+  setSpeechLibraryDirectory: (path: string) =>
+    callWails(
+      "SetSpeechLibraryDirectory",
+      () => fallbackApi.setSpeechLibraryDirectory(path),
+      path
+    ).then((value) => normalizeSpeechLibrarySettings(value)),
+
+  chooseSpeechLibraryDirectory: () =>
+    callWails("ChooseSpeechLibraryDirectory", fallbackApi.chooseSpeechLibraryDirectory).then((value) =>
+      normalizeSpeechLibrarySettings(value)
+    ),
+
+  listSpeechItems: () =>
+    callWails("ListSpeechItems", fallbackApi.listSpeechItems).then((items) =>
+      items.map(normalizeSpeechItem)
+    ),
+
+  getSpeechItemAudio: async (id: string) => {
+    const app = wailsApp();
+    const method = app?.GetSpeechItemAudio ?? app?.GetSpeechItemAudioURL;
+    if (!method) {
+      return fallbackApi.getSpeechItemAudio(id);
+    }
+    return (await method(id)) || fallbackApi.getSpeechItemAudio(id);
+  },
+
+  saveSpeechItem: (input: SaveSpeechItemInput) =>
+    callWails("SaveSpeechItem", () => fallbackApi.saveSpeechItem(input), input).then(
+      normalizeSpeechItem
+    ),
+
+  deleteSpeechItem: (id: string) =>
+    callWails("DeleteSpeechItem", () => fallbackApi.deleteSpeechItem(id), id)
 };

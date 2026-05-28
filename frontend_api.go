@@ -85,6 +85,15 @@ type UISynthesisRequest struct {
 	Options  UISynthesisOptions `json:"options"`
 }
 
+type UISaveSpeechItemRequest struct {
+	SourceID   string             `json:"sourceId"`
+	SourceName string             `json:"sourceName"`
+	Title      string             `json:"title"`
+	Text       string             `json:"text"`
+	OutputName string             `json:"outputName"`
+	Options    UISynthesisOptions `json:"options"`
+}
+
 type UIPreviewResult struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
@@ -107,11 +116,34 @@ type UIEngineStatus struct {
 }
 
 type UIOutputDirectorySettings struct {
-	Path        string `json:"path"`
-	DefaultPath string `json:"defaultPath"`
-	IsDefault   bool   `json:"isDefault"`
-	Source      string `json:"source"`
-	Message     string `json:"message"`
+	Path         string `json:"path"`
+	DefaultPath  string `json:"defaultPath"`
+	ResolvedPath string `json:"resolvedPath"`
+	IsDefault    bool   `json:"isDefault"`
+	Source       string `json:"source"`
+	Message      string `json:"message"`
+}
+
+type UISpeechLibrarySettings struct {
+	Path         string `json:"path"`
+	DefaultPath  string `json:"defaultPath"`
+	ResolvedPath string `json:"resolvedPath"`
+	IsDefault    bool   `json:"isDefault"`
+	Source       string `json:"source"`
+	Message      string `json:"message"`
+}
+
+type UISpeechItem struct {
+	ID         string  `json:"id"`
+	SourceID   string  `json:"sourceId"`
+	SourceName string  `json:"sourceName"`
+	Title      string  `json:"title"`
+	Text       string  `json:"text"`
+	Duration   float64 `json:"duration"`
+	CreatedAt  string  `json:"createdAt"`
+	AudioName  string  `json:"audioName,omitempty"`
+	AudioURL   string  `json:"audioUrl,omitempty"`
+	Path       string  `json:"path,omitempty"`
 }
 
 func (a *App) GetEngineStatus() (UIEngineStatus, error) {
@@ -193,6 +225,58 @@ func (a *App) ChooseOutputDirectory() (UIOutputDirectorySettings, error) {
 		return outputDirectorySettings(store, "MP3 output directory reset to the default app data exports folder."), nil
 	}
 	return outputDirectorySettings(store, "MP3 output directory updated."), nil
+}
+
+func (a *App) GetSpeechLibrarySettings() (UISpeechLibrarySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	return speechLibrarySettings(store, "Speech library directory loaded."), nil
+}
+
+func (a *App) SetSpeechLibraryDirectory(path string) (UISpeechLibrarySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	settings, err := store.UpdateSpeechLibraryDirectory(path)
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	if strings.TrimSpace(settings.SpeechLibraryDirectory) == "" {
+		return speechLibrarySettings(store, "Speech library directory reset to the default app data folder."), nil
+	}
+	return speechLibrarySettings(store, "Speech library directory updated."), nil
+}
+
+func (a *App) ChooseSpeechLibraryDirectory() (UISpeechLibrarySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	if a.ctx == nil {
+		return UISpeechLibrarySettings{}, errors.New("cannot open speech library directory chooser before Wails startup context is available")
+	}
+	selectedPath, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:                "Choose speech library folder",
+		DefaultDirectory:     speechLibraryDialogPath(store),
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	if strings.TrimSpace(selectedPath) == "" {
+		return speechLibrarySettings(store, "Folder selection cancelled; existing speech library directory was kept."), nil
+	}
+	settings, err := store.UpdateSpeechLibraryDirectory(selectedPath)
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	if strings.TrimSpace(settings.SpeechLibraryDirectory) == "" {
+		return speechLibrarySettings(store, "Speech library directory reset to the default app data folder."), nil
+	}
+	return speechLibrarySettings(store, "Speech library directory updated."), nil
 }
 
 func (a *App) ListSources() ([]UIVoiceSource, error) {
@@ -416,6 +500,107 @@ func (a *App) ExportMP3(req UISynthesisRequest) (UIExportResult, error) {
 	}, nil
 }
 
+func (a *App) ListSpeechItems() ([]UISpeechItem, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return nil, err
+	}
+	items := store.ListSpeechItems()
+	result := make([]UISpeechItem, 0, len(items))
+	for _, item := range items {
+		uiItem, err := speechItemToUI(store, item, false)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, uiItem)
+	}
+	return result, nil
+}
+
+func (a *App) GetSpeechItemAudio(id string) (string, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return "", err
+	}
+	item, err := store.GetSpeechItem(id)
+	if err != nil {
+		return "", err
+	}
+	return speechItemAudioURL(store, item)
+}
+
+func (a *App) SaveSpeechItem(req UISaveSpeechItemRequest) (UISpeechItem, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UISpeechItem{}, err
+	}
+	sourceID, err := store.ResolveSourceID(req.SourceID)
+	if err != nil {
+		return UISpeechItem{}, err
+	}
+	source, err := store.GetVoiceSource(sourceID)
+	if err != nil {
+		return UISpeechItem{}, err
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return UISpeechItem{}, errors.New("text is required")
+	}
+	libraryDir, err := store.ResolveSpeechLibraryDir()
+	if err != nil {
+		return UISpeechItem{}, err
+	}
+	itemID := ids.New("speech")
+	fileName := speechLibraryFileName(req, itemID)
+	outputPath := filepath.Join(libraryDir, fileName)
+	result, err := a.synthesizeToFile(model.SynthesisRequest{
+		SourceID:       sourceID,
+		Text:           text,
+		Format:         "mp3",
+		OutputName:     strings.TrimSuffix(fileName, filepath.Ext(fileName)),
+		OutputPath:     outputPath,
+		Speed:          req.Options.Speed,
+		Pitch:          req.Options.Pitch,
+		Clarity:        req.Options.Clarity,
+		NoiseReduction: req.Options.NoiseReduction,
+		SkipManifest:   true,
+		SkipRecord:     true,
+	})
+	if err != nil {
+		return UISpeechItem{}, err
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		return UISpeechItem{}, err
+	}
+	item := model.SpeechItem{
+		ID:             itemID,
+		SourceID:       sourceID,
+		SourceName:     source.Name,
+		Title:          speechLibraryTitle(req),
+		Text:           text,
+		FileName:       fileName,
+		Path:           outputPath,
+		DurationMillis: result.DurationMillis,
+		Bytes:          info.Size(),
+		CreatedAt:      result.CreatedAt,
+	}
+	storedItem, err := store.AddSpeechItem(item)
+	if err != nil {
+		return UISpeechItem{}, err
+	}
+	return speechItemToUI(store, storedItem, true)
+}
+
+func (a *App) DeleteSpeechItem(id string) error {
+	store, err := a.ensureStore()
+	if err != nil {
+		return err
+	}
+	_, err = store.DeleteSpeechItem(id)
+	return err
+}
+
 func (a *App) audioDataURL(relPath string) (string, error) {
 	store, err := a.ensureStore()
 	if err != nil {
@@ -450,11 +635,12 @@ func outputDirectorySettings(store *storage.Store, message string) UIOutputDirec
 		}
 	}
 	return UIOutputDirectorySettings{
-		Path:        path,
-		DefaultPath: store.ExportsDir(),
-		IsDefault:   isDefault,
-		Source:      "wails",
-		Message:     message,
+		Path:         path,
+		DefaultPath:  store.ExportsDir(),
+		ResolvedPath: store.MP3ExportDir(),
+		IsDefault:    isDefault,
+		Source:       "wails",
+		Message:      message,
 	}
 }
 
@@ -464,6 +650,99 @@ func outputDirectoryDialogPath(store *storage.Store) string {
 		return settings.Path
 	}
 	return settings.DefaultPath
+}
+
+func speechLibrarySettings(store *storage.Store, message string) UISpeechLibrarySettings {
+	settings := store.SettingsSnapshot()
+	isDefault := store.IsDefaultSpeechLibraryDir(settings.SpeechLibraryDirectory)
+	path := strings.TrimSpace(settings.SpeechLibraryDirectory)
+	if isDefault {
+		path = ""
+	}
+	if message == "" {
+		if isDefault {
+			message = "Using the default app data speech library folder."
+		} else {
+			message = "Using a custom speech library directory."
+		}
+	}
+	return UISpeechLibrarySettings{
+		Path:         path,
+		DefaultPath:  store.DefaultSpeechLibraryDir(),
+		ResolvedPath: store.SpeechLibraryDir(),
+		IsDefault:    isDefault,
+		Source:       "wails",
+		Message:      message,
+	}
+}
+
+func speechLibraryDialogPath(store *storage.Store) string {
+	settings := speechLibrarySettings(store, "")
+	if strings.TrimSpace(settings.Path) != "" {
+		return settings.Path
+	}
+	return settings.DefaultPath
+}
+
+func speechLibraryFileName(req UISaveSpeechItemRequest, itemID string) string {
+	baseName := strings.TrimSpace(req.OutputName)
+	if baseName == "" {
+		baseName = strings.TrimSpace(req.Title)
+	}
+	if baseName == "" {
+		baseName = "speech"
+	}
+	ext := filepath.Ext(baseName)
+	if strings.EqualFold(ext, ".mp3") {
+		baseName = strings.TrimSuffix(baseName, ext)
+	}
+	baseName = storage.SafeFileBase(filepath.Base(baseName))
+	return baseName + "-" + storage.SafeFileBase(itemID) + ".mp3"
+}
+
+func speechLibraryTitle(req UISaveSpeechItemRequest) string {
+	if title := strings.TrimSpace(req.Title); title != "" {
+		return title
+	}
+	text := []rune(strings.TrimSpace(req.Text))
+	if len(text) > 40 {
+		text = text[:40]
+	}
+	return string(text)
+}
+
+func speechItemToUI(store *storage.Store, item model.SpeechItem, requireAudioURL bool) (UISpeechItem, error) {
+	audioURL := ""
+	if requireAudioURL {
+		var err error
+		audioURL, err = speechItemAudioURL(store, item)
+		if err != nil {
+			return UISpeechItem{}, err
+		}
+	}
+	return UISpeechItem{
+		ID:         item.ID,
+		SourceID:   item.SourceID,
+		SourceName: item.SourceName,
+		Title:      item.Title,
+		Text:       item.Text,
+		Duration:   float64(item.DurationMillis) / 1000,
+		CreatedAt:  formatUITime(item.CreatedAt),
+		AudioName:  item.FileName,
+		AudioURL:   audioURL,
+		Path:       item.Path,
+	}, nil
+}
+
+func speechItemAudioURL(store *storage.Store, item model.SpeechItem) (string, error) {
+	if strings.TrimSpace(item.Path) == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(storedAudioPath(store, item.Path))
+	if err != nil {
+		return "", err
+	}
+	return "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func sourceToUI(source model.VoiceSource, samples []model.Sample) UIVoiceSource {

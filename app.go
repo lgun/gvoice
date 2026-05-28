@@ -57,13 +57,14 @@ func (a *App) getAppInfo() (model.AppInfo, error) {
 	}
 	state := store.StateSnapshot()
 	return model.AppInfo{
-		Name:                  "guvoice",
-		DisplayName:           "구보이스",
-		DataDir:               store.BaseDir(),
-		MP3ExportDirectory:    store.SettingsSnapshot().MP3ExportDirectory,
-		SelectedVoiceSourceID: state.SelectedVoiceSourceID,
-		MinimumSampleSetID:    catalog.MinimumKoreanSampleSetID,
-		FallbackPolicy:        catalog.DefaultFallbackPolicy(),
+		Name:                   "guvoice",
+		DisplayName:            "구보이스",
+		DataDir:                store.BaseDir(),
+		MP3ExportDirectory:     store.SettingsSnapshot().MP3ExportDirectory,
+		SpeechLibraryDirectory: store.SettingsSnapshot().SpeechLibraryDirectory,
+		SelectedVoiceSourceID:  state.SelectedVoiceSourceID,
+		MinimumSampleSetID:     catalog.MinimumKoreanSampleSetID,
+		FallbackPolicy:         catalog.DefaultFallbackPolicy(),
 	}, nil
 }
 
@@ -196,7 +197,14 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 	manifestRel := filepath.ToSlash(filepath.Join("exports", baseName+".json"))
 	audioRef := filepath.ToSlash(filepath.Join("exports", baseName+"."+format))
 	audioPath := filepath.Join(store.BaseDir(), filepath.FromSlash(audioRef))
-	if format == "mp3" {
+	if outputPath := strings.TrimSpace(req.OutputPath); outputPath != "" {
+		if filepath.IsAbs(outputPath) {
+			audioPath = filepath.Clean(outputPath)
+		} else {
+			audioPath = filepath.Join(store.BaseDir(), outputPath)
+		}
+		audioRef = audioPath
+	} else if format == "mp3" {
 		mp3Dir, err := store.ResolveMP3ExportDir()
 		if err != nil {
 			return model.SynthesisResult{}, err
@@ -207,6 +215,10 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		}
 	}
 	manifestPath := filepath.Join(store.BaseDir(), manifestRel)
+	if req.SkipManifest {
+		manifestRel = ""
+		manifestPath = ""
+	}
 
 	steps, usedPromptIDs := sequenceForText(req.Text)
 	latestSamples := latestUsableSamplesByPrompt(samples)
@@ -258,15 +270,19 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		Message:        fmt.Sprintf("샘플 기반 %s를 생성했습니다. 사용한 promptId: %s", strings.ToUpper(format), strings.Join(usedPromptIDs, ", ")),
 	}
 
-	manifest, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return model.SynthesisResult{}, err
+	if !req.SkipManifest {
+		manifest, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return model.SynthesisResult{}, err
+		}
+		if err := os.WriteFile(manifestPath, manifest, 0600); err != nil {
+			return model.SynthesisResult{}, err
+		}
 	}
-	if err := os.WriteFile(manifestPath, manifest, 0600); err != nil {
-		return model.SynthesisResult{}, err
-	}
-	if err := store.RecordSynthesis(result); err != nil {
-		return model.SynthesisResult{}, err
+	if !req.SkipRecord {
+		if err := store.RecordSynthesis(result); err != nil {
+			return model.SynthesisResult{}, err
+		}
 	}
 	return result, nil
 }

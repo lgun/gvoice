@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,12 +26,13 @@ import (
 const stateVersion = 1
 
 type Store struct {
-	mu         sync.Mutex
-	baseDir    string
-	samplesDir string
-	exportsDir string
-	statePath  string
-	state      model.State
+	mu               sync.Mutex
+	baseDir          string
+	samplesDir       string
+	exportsDir       string
+	speechLibraryDir string
+	statePath        string
+	state            model.State
 }
 
 func DefaultBaseDir() string {
@@ -48,15 +50,19 @@ func Open(baseDir string) (*Store, error) {
 		baseDir = DefaultBaseDir()
 	}
 	store := &Store{
-		baseDir:    baseDir,
-		samplesDir: filepath.Join(baseDir, "samples"),
-		exportsDir: filepath.Join(baseDir, "exports"),
-		statePath:  filepath.Join(baseDir, "state.json"),
+		baseDir:          baseDir,
+		samplesDir:       filepath.Join(baseDir, "samples"),
+		exportsDir:       filepath.Join(baseDir, "exports"),
+		speechLibraryDir: filepath.Join(baseDir, "speech-library"),
+		statePath:        filepath.Join(baseDir, "state.json"),
 	}
 	if err := os.MkdirAll(store.samplesDir, 0700); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(store.exportsDir, 0700); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(store.speechLibraryDir, 0700); err != nil {
 		return nil, err
 	}
 	if err := store.load(); err != nil {
@@ -73,9 +79,17 @@ func (s *Store) ExportsDir() string {
 	return s.exportsDir
 }
 
+func (s *Store) DefaultSpeechLibraryDir() string {
+	return s.speechLibraryDir
+}
+
 func (s *Store) MP3ExportDir() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.mp3ExportDirLocked()
+}
+
+func (s *Store) mp3ExportDirLocked() string {
 	if dir := strings.TrimSpace(s.state.Settings.MP3ExportDirectory); dir != "" {
 		if samePath(dir, s.exportsDir) {
 			return s.exportsDir
@@ -96,6 +110,35 @@ func (s *Store) ResolveMP3ExportDir() (string, error) {
 func (s *Store) IsDefaultMP3ExportDir(dir string) bool {
 	dir = strings.TrimSpace(dir)
 	return dir == "" || samePath(dir, s.exportsDir)
+}
+
+func (s *Store) SpeechLibraryDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.speechLibraryDirLocked()
+}
+
+func (s *Store) speechLibraryDirLocked() string {
+	if dir := strings.TrimSpace(s.state.Settings.SpeechLibraryDirectory); dir != "" {
+		if samePath(dir, s.speechLibraryDir) {
+			return s.speechLibraryDir
+		}
+		return dir
+	}
+	return s.speechLibraryDir
+}
+
+func (s *Store) ResolveSpeechLibraryDir() (string, error) {
+	dir := s.SpeechLibraryDir()
+	if samePath(dir, s.speechLibraryDir) {
+		return s.speechLibraryDir, nil
+	}
+	return prepareWritableDirectoryFor(dir, "speech library directory")
+}
+
+func (s *Store) IsDefaultSpeechLibraryDir(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	return dir == "" || samePath(dir, s.speechLibraryDir)
 }
 
 func (s *Store) SettingsSnapshot() model.AppSettings {
@@ -125,7 +168,51 @@ func (s *Store) UpdateSettings(settings model.AppSettings) (model.AppSettings, e
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	effectiveDir := dir
+	if effectiveDir == "" {
+		effectiveDir = s.exportsDir
+	}
+	speechLibraryDir := s.speechLibraryDirLocked()
+	if samePath(effectiveDir, speechLibraryDir) {
+		return model.AppSettings{}, fmt.Errorf("MP3 export directory %q cannot be the same as the speech library directory %q", effectiveDir, speechLibraryDir)
+	}
 	s.state.Settings.MP3ExportDirectory = dir
+	if err := s.saveLocked(); err != nil {
+		return model.AppSettings{}, err
+	}
+	return s.state.Settings, nil
+}
+
+func (s *Store) UpdateSpeechLibraryDirectory(path string) (model.AppSettings, error) {
+	dir := strings.TrimSpace(path)
+	if dir != "" {
+		if s.IsDefaultSpeechLibraryDir(dir) {
+			dir = ""
+		}
+	}
+	if dir != "" {
+		prepared, err := prepareWritableDirectoryFor(dir, "speech library directory")
+		if err != nil {
+			return model.AppSettings{}, err
+		}
+		if samePath(prepared, s.speechLibraryDir) {
+			dir = ""
+		} else {
+			dir = prepared
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	effectiveDir := dir
+	if effectiveDir == "" {
+		effectiveDir = s.speechLibraryDir
+	}
+	mp3ExportDir := s.mp3ExportDirLocked()
+	if samePath(effectiveDir, mp3ExportDir) {
+		return model.AppSettings{}, fmt.Errorf("speech library directory %q cannot be the same as the MP3 export directory %q", effectiveDir, mp3ExportDir)
+	}
+	s.state.Settings.SpeechLibraryDirectory = dir
 	if err := s.saveLocked(); err != nil {
 		return model.AppSettings{}, err
 	}
@@ -520,6 +607,120 @@ func (s *Store) RecordSynthesis(result model.SynthesisResult) error {
 	return s.saveLocked()
 }
 
+func (s *Store) AddSpeechItem(item model.SpeechItem) (model.SpeechItem, error) {
+	item.ID = strings.TrimSpace(item.ID)
+	if item.ID == "" {
+		item.ID = ids.New("speech")
+	}
+	item.SourceID = strings.TrimSpace(item.SourceID)
+	if item.SourceID == "" {
+		return model.SpeechItem{}, errors.New("sourceId is required")
+	}
+	item.Text = strings.TrimSpace(item.Text)
+	if item.Text == "" {
+		return model.SpeechItem{}, errors.New("text is required")
+	}
+	item.FileName = filepath.Base(strings.TrimSpace(item.FileName))
+	if item.FileName == "." || item.FileName == "" {
+		item.FileName = SafeFileBase(item.ID) + ".mp3"
+	}
+	item.Path = strings.TrimSpace(item.Path)
+	if item.Path == "" {
+		return model.SpeechItem{}, errors.New("speech item path is required")
+	}
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = time.Now().UTC()
+	}
+	if item.Bytes <= 0 {
+		info, err := os.Stat(s.resolveSpeechItemPath(item.Path))
+		if err != nil {
+			return model.SpeechItem{}, fmt.Errorf("could not stat speech item file %q: %w", item.Path, err)
+		}
+		item.Bytes = info.Size()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.state.SpeechItems {
+		if existing.ID == item.ID {
+			return model.SpeechItem{}, fmt.Errorf("speech item %q already exists", item.ID)
+		}
+	}
+	s.state.SpeechItems = append(s.state.SpeechItems, item)
+	if err := s.saveLocked(); err != nil {
+		return model.SpeechItem{}, err
+	}
+	return item, nil
+}
+
+func (s *Store) ListSpeechItems() []model.SpeechItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := append([]model.SpeechItem(nil), s.state.SpeechItems...)
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items
+}
+
+func (s *Store) GetSpeechItem(id string) (model.SpeechItem, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return model.SpeechItem{}, errors.New("speech item id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.state.SpeechItems {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return model.SpeechItem{}, fmt.Errorf("speech item %q not found", id)
+}
+
+func (s *Store) DeleteSpeechItem(id string) (model.SpeechItem, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return model.SpeechItem{}, errors.New("speech item id is required")
+	}
+
+	s.mu.Lock()
+	index := -1
+	var item model.SpeechItem
+	for i, existing := range s.state.SpeechItems {
+		if existing.ID == id {
+			index = i
+			item = existing
+			break
+		}
+	}
+	if index < 0 {
+		s.mu.Unlock()
+		return model.SpeechItem{}, fmt.Errorf("speech item %q not found", id)
+	}
+	path := ""
+	if strings.TrimSpace(item.Path) != "" {
+		path = s.resolveSpeechItemPath(item.Path)
+	}
+	previous := append([]model.SpeechItem(nil), s.state.SpeechItems...)
+	next := append([]model.SpeechItem(nil), s.state.SpeechItems[:index]...)
+	next = append(next, s.state.SpeechItems[index+1:]...)
+	s.state.SpeechItems = next
+	if err := s.saveLocked(); err != nil {
+		s.state.SpeechItems = previous
+		s.mu.Unlock()
+		return model.SpeechItem{}, err
+	}
+	s.mu.Unlock()
+	if path != "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return model.SpeechItem{}, fmt.Errorf("could not delete speech item file %q: %w", path, err)
+		}
+	}
+	return item, nil
+}
+
 func (s *Store) ExportVoiceSource(source model.VoiceSource, samples []model.Sample, outputPath string) (model.ExportResult, error) {
 	if strings.TrimSpace(outputPath) == "" {
 		return model.ExportResult{}, errors.New("output path is required")
@@ -697,31 +898,38 @@ func isWAVBlob(mimeType string, ext string) bool {
 }
 
 func prepareWritableDirectory(dir string) (string, error) {
+	return prepareWritableDirectoryFor(dir, "MP3 export directory")
+}
+
+func prepareWritableDirectoryFor(dir string, label string) (string, error) {
+	if strings.TrimSpace(label) == "" {
+		label = "directory"
+	}
 	cleaned, err := filepath.Abs(filepath.Clean(dir))
 	if err != nil {
-		return "", fmt.Errorf("invalid MP3 export directory %q: %w", dir, err)
+		return "", fmt.Errorf("invalid %s %q: %w", label, dir, err)
 	}
 	if err := os.MkdirAll(cleaned, 0700); err != nil {
-		return "", fmt.Errorf("could not create MP3 export directory %q: %w", cleaned, err)
+		return "", fmt.Errorf("could not create %s %q: %w", label, cleaned, err)
 	}
 	info, err := os.Stat(cleaned)
 	if err != nil {
-		return "", fmt.Errorf("could not access MP3 export directory %q: %w", cleaned, err)
+		return "", fmt.Errorf("could not access %s %q: %w", label, cleaned, err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("MP3 export path %q is not a directory", cleaned)
+		return "", fmt.Errorf("%s path %q is not a directory", label, cleaned)
 	}
 	testFile, err := os.CreateTemp(cleaned, ".guvoice-write-test-*")
 	if err != nil {
-		return "", fmt.Errorf("MP3 export directory %q is not writable: %w", cleaned, err)
+		return "", fmt.Errorf("%s %q is not writable: %w", label, cleaned, err)
 	}
 	testPath := testFile.Name()
 	if err := testFile.Close(); err != nil {
 		_ = os.Remove(testPath)
-		return "", fmt.Errorf("MP3 export directory %q is not writable: %w", cleaned, err)
+		return "", fmt.Errorf("%s %q is not writable: %w", label, cleaned, err)
 	}
 	if err := os.Remove(testPath); err != nil {
-		return "", fmt.Errorf("MP3 export directory %q is not writable: %w", cleaned, err)
+		return "", fmt.Errorf("%s %q is not writable: %w", label, cleaned, err)
 	}
 	return cleaned, nil
 }
@@ -756,6 +964,13 @@ func (s *Store) touchSourceLocked(sourceID string) error {
 		}
 	}
 	return fmt.Errorf("voice source %q not found", sourceID)
+}
+
+func (s *Store) resolveSpeechItemPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(s.baseDir, filepath.FromSlash(path))
 }
 
 func decodeBase64Blob(blob string, fallbackMime string) ([]byte, string, error) {
@@ -856,6 +1071,7 @@ func cloneState(state model.State) model.State {
 	state.Uploads = append([]model.Upload(nil), state.Uploads...)
 	state.Syntheses = append([]model.SynthesisResult(nil), state.Syntheses...)
 	state.Exports = append([]model.ExportResult(nil), state.Exports...)
+	state.SpeechItems = append([]model.SpeechItem(nil), state.SpeechItems...)
 	return state
 }
 

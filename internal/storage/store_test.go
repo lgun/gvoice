@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"guvoice/internal/model"
 	"guvoice/internal/synth"
@@ -198,6 +200,160 @@ func TestUpdateSettingsRejectsFileAsMP3ExportDirectory(t *testing.T) {
 	}
 }
 
+func TestUpdateSettingsRejectsCurrentSpeechLibraryDirectory(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedDir := filepath.Join(t.TempDir(), "shared-audio-dir")
+	if _, err := store.UpdateSpeechLibraryDirectory(sharedDir); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.UpdateSettings(model.AppSettings{MP3ExportDirectory: sharedDir})
+	if err == nil {
+		t.Fatal("expected export directory matching speech library directory to be rejected")
+	}
+	if !strings.Contains(err.Error(), "cannot be the same as the speech library directory") {
+		t.Fatalf("expected clear directory conflict error, got %v", err)
+	}
+	if store.MP3ExportDir() == sharedDir {
+		t.Fatalf("conflicting MP3 export directory should not be stored")
+	}
+}
+
+func TestSpeechLibraryDirectoryDefaultsToAppDataFolder(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.SettingsSnapshot().SpeechLibraryDirectory != "" {
+		t.Fatalf("expected default speech library setting to be blank, got %#v", store.SettingsSnapshot())
+	}
+	if store.SpeechLibraryDir() != store.DefaultSpeechLibraryDir() {
+		t.Fatalf("expected default speech library dir %s, got %s", store.DefaultSpeechLibraryDir(), store.SpeechLibraryDir())
+	}
+	if _, err := os.Stat(store.DefaultSpeechLibraryDir()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateSpeechLibraryDirectoryPersistsCustomAndNormalizesDefault(t *testing.T) {
+	baseDir := t.TempDir()
+	store, err := Open(baseDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customDir := filepath.Join(t.TempDir(), "speech library")
+	settings, err := store.UpdateSpeechLibraryDirectory(customDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.SpeechLibraryDirectory == "" {
+		t.Fatal("expected custom speech library directory to be stored")
+	}
+	if store.SpeechLibraryDir() != settings.SpeechLibraryDirectory {
+		t.Fatalf("expected configured speech library dir, got %s", store.SpeechLibraryDir())
+	}
+
+	reopened, err := Open(baseDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.SettingsSnapshot().SpeechLibraryDirectory != settings.SpeechLibraryDirectory {
+		t.Fatalf("settings did not persist: %#v", reopened.SettingsSnapshot())
+	}
+
+	reset, err := reopened.UpdateSpeechLibraryDirectory(reopened.DefaultSpeechLibraryDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.SpeechLibraryDirectory != "" {
+		t.Fatalf("expected default speech library directory to be stored as blank, got %q", reset.SpeechLibraryDirectory)
+	}
+}
+
+func TestUpdateSpeechLibraryDirectoryRejectsCurrentMP3ExportDirectory(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedDir := filepath.Join(t.TempDir(), "shared-audio-dir")
+	if _, err := store.UpdateSettings(model.AppSettings{MP3ExportDirectory: sharedDir}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.UpdateSpeechLibraryDirectory(sharedDir)
+	if err == nil {
+		t.Fatal("expected speech library directory matching export directory to be rejected")
+	}
+	if !strings.Contains(err.Error(), "cannot be the same as the MP3 export directory") {
+		t.Fatalf("expected clear directory conflict error, got %v", err)
+	}
+	if store.SpeechLibraryDir() == sharedDir {
+		t.Fatalf("conflicting speech library directory should not be stored")
+	}
+}
+
+func TestUpdateSpeechLibraryDirectoryRejectsFilePath(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, []byte("file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.UpdateSpeechLibraryDirectory(path)
+	if err == nil {
+		t.Fatal("expected file path to be rejected as speech library directory")
+	}
+}
+
+func TestDeleteSpeechItemSavesMetadataBeforeDeletingFile(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemDir := filepath.Join(store.BaseDir(), "speech-library", "non-empty-item-dir")
+	if err := os.MkdirAll(itemDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(itemDir, "keeps-delete-from-succeeding.txt"), []byte("still here"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.AddSpeechItem(model.SpeechItem{
+		ID:        "speech-delete-order",
+		SourceID:  "voice-delete-order",
+		Title:     "Delete order",
+		Text:      "hello",
+		FileName:  "delete-order.mp3",
+		Path:      itemDir,
+		Bytes:     1,
+		CreatedAt: nowForTest(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := store.DeleteSpeechItem(item.ID)
+	if err == nil {
+		t.Fatal("expected file deletion error for non-empty directory")
+	}
+	if deleted.ID != "" {
+		t.Fatalf("expected empty item on delete error, got %#v", deleted)
+	}
+	if !strings.Contains(err.Error(), "could not delete speech item file") {
+		t.Fatalf("expected clear file deletion error, got %v", err)
+	}
+	if items := store.ListSpeechItems(); len(items) != 0 {
+		t.Fatalf("metadata should be removed after state save even when file deletion fails, got %#v", items)
+	}
+	if _, statErr := os.Stat(itemDir); statErr != nil {
+		t.Fatalf("delete failure should leave file path in place, stat err=%v", statErr)
+	}
+}
+
 func TestExportVoiceSourceWritesZip(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -256,4 +412,8 @@ func paddedWAVData(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func nowForTest() time.Time {
+	return time.Now().UTC()
 }

@@ -3,13 +3,14 @@ package model
 import "time"
 
 type AppInfo struct {
-	Name                  string           `json:"name"`
-	DisplayName           string           `json:"displayName"`
-	DataDir               string           `json:"dataDir"`
-	MP3ExportDirectory    string           `json:"mp3ExportDirectory"`
-	SelectedVoiceSourceID string           `json:"selectedVoiceSourceId"`
-	MinimumSampleSetID    string           `json:"minimumSampleSetId"`
-	FallbackPolicy        []FallbackPolicy `json:"fallbackPolicy"`
+	Name                   string           `json:"name"`
+	DisplayName            string           `json:"displayName"`
+	DataDir                string           `json:"dataDir"`
+	MP3ExportDirectory     string           `json:"mp3ExportDirectory"`
+	SpeechLibraryDirectory string           `json:"speechLibraryDirectory"`
+	SelectedVoiceSourceID  string           `json:"selectedVoiceSourceId"`
+	MinimumSampleSetID     string           `json:"minimumSampleSetId"`
+	FallbackPolicy         []FallbackPolicy `json:"fallbackPolicy"`
 }
 
 type State struct {
@@ -21,12 +22,14 @@ type State struct {
 	Uploads               []Upload          `json:"uploads"`
 	Syntheses             []SynthesisResult `json:"syntheses"`
 	Exports               []ExportResult    `json:"exports"`
+	SpeechItems           []SpeechItem      `json:"speechItems"`
 	Settings              AppSettings       `json:"settings"`
 	UpdatedAt             time.Time         `json:"updatedAt"`
 }
 
 type AppSettings struct {
-	MP3ExportDirectory string `json:"mp3ExportDirectory"`
+	MP3ExportDirectory     string `json:"mp3ExportDirectory"`
+	SpeechLibraryDirectory string `json:"speechLibraryDirectory"`
 }
 
 type VoiceSource struct {
@@ -218,11 +221,14 @@ type SynthesisRequest struct {
 	Text           string  `json:"text"`
 	Format         string  `json:"format"`
 	OutputName     string  `json:"outputName"`
+	OutputPath     string  `json:"outputPath"`
 	SampleRate     int     `json:"sampleRate"`
 	Speed          float64 `json:"speed"`
 	Pitch          float64 `json:"pitch"`
 	Clarity        float64 `json:"clarity"`
 	NoiseReduction float64 `json:"noiseReduction"`
+	SkipManifest   bool    `json:"skipManifest"`
+	SkipRecord     bool    `json:"skipRecord"`
 }
 
 type SynthesisResult struct {
@@ -251,4 +257,29 @@ type ExportResult struct {
 	Path      string    `json:"path"`
 	Bytes     int64     `json:"bytes"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+type SaveSpeechItemRequest struct {
+	SourceID       string  `json:"sourceId"`
+	Title          string  `json:"title"`
+	Text           string  `json:"text"`
+	OutputName     string  `json:"outputName"`
+	SampleRate     int     `json:"sampleRate"`
+	Speed          float64 `json:"speed"`
+	Pitch          float64 `json:"pitch"`
+	Clarity        float64 `json:"clarity"`
+	NoiseReduction float64 `json:"noiseReduction"`
+}
+
+type SpeechItem struct {
+	ID             string    `json:"id"`
+	SourceID       string    `json:"sourceId"`
+	SourceName     string    `json:"sourceName"`
+	Title          string    `json:"title"`
+	Text           string    `json:"text"`
+	FileName       string    `json:"fileName"`
+	Path           string    `json:"path"`
+	DurationMillis int       `json:"durationMillis"`
+	Bytes          int64     `json:"bytes"`
+	CreatedAt      time.Time `json:"createdAt"`
 }

@@ -19,6 +19,9 @@ The core product rule is strict: an empty source, an incomplete source, or a sou
 - Preview generated audio as WAV.
 - Export generated audio as real MP3.
 - Configure the MP3 export folder with a Wails directory picker. Leaving the setting at default uses the app's `exports` folder.
+- Save generated MP3 speech items to an in-app speech library from the Speak tab with `보관함 저장`.
+- Use the `보관함` tab to list saved speech items, inspect title/source/date/duration/file path, delete items, and prepare an item for lazy `<audio controls>` playback.
+- Configure the speech library folder separately from the MP3 export folder. The app rejects settings where both folders resolve to the same physical path.
 - Run the frontend in a normal browser with a localStorage fallback when Wails bindings are unavailable.
 
 ## Audio Behavior
@@ -35,16 +38,21 @@ Synthesis maps input text to prompt IDs, loads the matching usable WAV samples, 
 - `?` gives the previous ending a slower/stretched question feel.
 - `~` stretches the previous sample with a repeat cap.
 
+Saving to the speech library uses the same source readiness rule and synthesis options as MP3 export, including nested speed, pitch, clarity, and noise reduction settings. Library listings return metadata first, and each item's MP3 data is loaded only when playback is requested.
+
 ## Data Location
 
 User data is stored under the user's app config directory in a `guvoice` folder.
 
-- `state.json`: voice sources, samples, uploads, export folder preference, and history metadata.
+- `state.json`: voice sources, samples, uploads, export folder preference, speech library folder preference, saved speech item metadata, and history metadata.
 - `samples/{voiceSourceId}/prompts`: recorded prompt samples.
 - `samples/{voiceSourceId}/uploads`: uploaded samples.
 - `exports`: default preview/export output folder.
+- `speech-library`: default saved speech library folder.
 
 The MP3 folder setting stores an empty path as the default. The UI can still display the resolved default exports path. If the user selects or enters the actual default exports path, the app normalizes it back to the default setting.
+
+The speech library folder follows the same default-state pattern: an empty stored path means the app data `speech-library` folder, while the UI receives the default and resolved physical paths. Export and library directories are intentionally kept distinct.
 
 ## Development
 
@@ -83,6 +91,7 @@ The latest parent verification passed:
 ```powershell
 go test ./...
 npm run build
+git diff --check
 wails build
 ```
 
