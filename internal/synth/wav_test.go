@@ -205,6 +205,44 @@ func TestOptionsAffectRenderedPCM(t *testing.T) {
 	}
 }
 
+func TestRenderSequenceAllowsFiveXSpeed(t *testing.T) {
+	dir := t.TempDir()
+	samplePath := filepath.Join(dir, "sample.wav")
+	const sampleRate = 8000
+	pcm := make([]int16, sampleRate)
+	for i := range pcm {
+		if i%40 < 20 {
+			pcm[i] = 9000
+		} else {
+			pcm[i] = -9000
+		}
+	}
+	if err := WriteWAV(samplePath, sampleRate, pcm); err != nil {
+		t.Fatal(err)
+	}
+	steps := []SequenceStep{{PromptID: "test", Path: samplePath}}
+
+	normal, _, err := RenderSequence(steps, Options{SampleRate: sampleRate, Speed: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	double, _, err := RenderSequence(steps, Options{SampleRate: sampleRate, Speed: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fiveX, _, err := RenderSequence(steps, Options{SampleRate: sampleRate, Speed: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fiveX.Samples) >= len(double.Samples) {
+		t.Fatalf("expected 5x speed not to clamp to 2x length: 2x=%d 5x=%d", len(double.Samples), len(fiveX.Samples))
+	}
+	if len(fiveX.Samples) >= len(normal.Samples)/3 {
+		t.Fatalf("expected 5x speed to produce much shorter output: 1x=%d 5x=%d", len(normal.Samples), len(fiveX.Samples))
+	}
+}
+
 func numberedPCM(length int) []int16 {
 	pcm := make([]int16, length)
 	for i := range pcm {

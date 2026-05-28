@@ -251,7 +251,7 @@ function SpeakTab({
           label="속도"
           value={options.speed}
           min={0.65}
-          max={1.35}
+          max={5}
           step={0.05}
           suffix="x"
           onChange={(speed) => setOptions({ ...options, speed })}

@@ -355,8 +355,8 @@ func normalizedSpeed(value float64) float64 {
 	if value < 0.5 {
 		return 0.5
 	}
-	if value > 2 {
-		return 2
+	if value > 5 {
+		return 5
 	}
 	return value
 }
@@ -501,8 +501,8 @@ func resampleForSpeedFactor(pcm []int16, speed float64) []int16 {
 	if speed < 0.25 {
 		speed = 0.25
 	}
-	if speed > 4 {
-		speed = 4
+	if speed > 5 {
+		speed = 5
 	}
 	if math.Abs(speed-1) < 0.001 {
 		return append([]int16(nil), pcm...)
