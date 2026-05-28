@@ -40,5 +40,6 @@ The MVP keeps final consonants as a timing/pitch artifact rather than requiring 
 - The frontend also has a localStorage fallback so the UI can be demonstrated in a normal browser during development.
 - Internal sample storage should keep original captures and metadata under the user's application data directory.
 - The Go backend decodes saved WAV samples by promptId and renders preview/export WAV files by concatenating the mapped sample sequence.
+- Prosody rule: supported punctuation is preserved in `sequenceForText` as synthesis timing/expression. Spaces become short clamped pauses, comma/period-like marks have distinct pause lengths, `!` emphasizes, `?` slows/stretches the ending, and `~` stretches the previous sample without adding missing sample requirements.
 - MP3 export remains a follow-up; until an encoder is wired in, export saves the generated WAV and returns that path.
 - WAV upload decoding is limited to RIFF/WAVE 16-bit PCM for the MVP; WAVE_FORMAT_EXTENSIBLE can be added later.

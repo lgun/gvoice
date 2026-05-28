@@ -531,5 +531,5 @@ func buildMissingSampleReport(sourceID string, text string, analysis model.TextA
 }
 
 func isSkippable(r rune) bool {
-	return r == ' ' || r == '\n' || r == '\r' || r == '\t'
+	return r == ' ' || r == '\n' || r == '\r' || r == '\t' || isProsodyRune(r)
 }

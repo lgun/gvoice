@@ -61,3 +61,5 @@ wails build
 현재 음성 합성은 필수 promptId에 해당하는 실제 WAV 샘플이 모두 있을 때만 동작합니다. 한글 입력은 최소 매핑으로 promptId 시퀀스로 변환되고, 백엔드가 해당 WAV들을 trim/resample/fade 처리 후 이어 붙여 결과 WAV를 만듭니다. MVP 저장 버튼은 WAV 파일 저장으로 동작합니다. 다음 단계에서 ffmpeg 번들 또는 Go MP3 인코더를 연결하면 실제 MP3 export로 바꿀 수 있습니다.
 
 WAV 디코더는 현재 RIFF/WAVE 16-bit PCM을 지원합니다. 앱 자체 녹음은 이 형식으로 저장되며, WAVE_FORMAT_EXTENSIBLE 업로드 지원은 후속 작업입니다.
+
+Prosody punctuation: spaces create short clamped pauses; commas, periods, and sentence marks add distinct pause lengths; `!` emphasizes the previous sample; `?` gives the previous ending a slower/stretched question feel; `~` stretches the previous sample with a cap for repeats. These marks never count as missing samples.

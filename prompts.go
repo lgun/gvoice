@@ -143,13 +143,32 @@ func sampleUsableForSynthesis(sample model.Sample) bool {
 func sequenceForText(text string) ([]synth.SequenceStep, []string) {
 	steps := []synth.SequenceStep{}
 	usedPromptIDs := map[string]bool{}
+	pendingSpaces := 0
 	for _, r := range text {
 		if unicode.IsSpace(r) {
-			steps = append(steps, synth.SequenceStep{SilenceMillis: 95})
+			pendingSpaces++
 			continue
 		}
-		if isSentencePause(r) {
-			steps = append(steps, synth.SequenceStep{SilenceMillis: 180})
+		if pendingSpaces > 0 {
+			steps = appendProsodySilence(steps, spacePauseMillis(pendingSpaces))
+			pendingSpaces = 0
+		}
+		if isStretchMark(r) {
+			applyStretchMark(steps)
+			continue
+		}
+		if isEmphasisMark(r) {
+			applyEmphasisMark(steps)
+			steps = appendProsodySilence(steps, punctuationPauseMillis(r))
+			continue
+		}
+		if isQuestionMark(r) {
+			applyQuestionMark(steps)
+			steps = appendProsodySilence(steps, punctuationPauseMillis(r))
+			continue
+		}
+		if pauseMillis := punctuationPauseMillis(r); pauseMillis > 0 {
+			steps = appendProsodySilence(steps, pauseMillis)
 			continue
 		}
 		parts, ok := hangul.DecomposeRune(r)
@@ -160,6 +179,9 @@ func sequenceForText(text string) ([]synth.SequenceStep, []string) {
 		promptID := promptIDForHangul(parts)
 		usedPromptIDs[promptID] = true
 		steps = append(steps, synth.SequenceStep{PromptID: promptID})
+	}
+	if pendingSpaces > 0 {
+		steps = appendProsodySilence(steps, spacePauseMillis(pendingSpaces))
 	}
 
 	promptIDs := make([]string, 0, len(usedPromptIDs))

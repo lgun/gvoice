@@ -64,6 +64,8 @@ Backend:
 - `internal/catalog/catalog.go`: Korean minimal sample set.
 - `internal/synth/wav.go`: WAV reader/writer and concatenative sequence renderer.
 
+Prosody note: spaces, commas, periods, `!`, `?`, and `~` are synthesis controls, not sample requirements. They add clamped pauses or adjust the previous prompt step's gain, speed, gap, and stretch while preserving the rule that empty or incomplete voice sources cannot generate speech.
+
 Docs:
 
 - `docs/planning.md`: planning notes and MVP reasoning.

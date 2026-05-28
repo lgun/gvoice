@@ -25,6 +25,11 @@ type SequenceStep struct {
 	PromptID      string
 	Path          string
 	SilenceMillis int
+	Speed         float64
+	Gain          float64
+	GapMillis     int
+	Repeat        int
+	Stretch       float64
 }
 
 func ReadWAV(path string) (Buffer, error) {
@@ -137,10 +142,20 @@ func WriteSequenceWAV(path string, steps []SequenceStep, opts Options) (int, err
 		}
 		pcm := resample(buffer.Samples, buffer.SampleRate, sampleRate)
 		pcm = trimSilence(pcm, sampleRate)
-		pcm = resampleForSpeed(pcm, speed)
+		stepSpeed := speed * normalizedStepSpeed(step.Speed) / normalizedStretch(step.Stretch)
+		pcm = resampleForSpeedFactor(pcm, stepSpeed)
+		applyGain(pcm, normalizedGain(step.Gain))
 		applyFade(pcm, sampleRate)
-		output = append(output, pcm...)
-		output = appendSilence(output, sampleRate, int(float64(gapMillis)/speed))
+
+		repeat := normalizedRepeat(step.Repeat)
+		for count := 0; count < repeat; count++ {
+			output = append(output, pcm...)
+			if count < repeat-1 {
+				output = appendSilence(output, sampleRate, int(float64(max(8, gapMillis/2))/speed))
+			}
+		}
+		stepGapMillis := gapMillis + max(0, step.GapMillis)
+		output = appendSilence(output, sampleRate, int(float64(stepGapMillis)/speed))
 	}
 
 	if len(output) == 0 {
@@ -233,6 +248,52 @@ func normalizedSpeed(value float64) float64 {
 	return value
 }
 
+func normalizedStepSpeed(value float64) float64 {
+	if value <= 0 {
+		return 1
+	}
+	if value < 0.5 {
+		return 0.5
+	}
+	if value > 2 {
+		return 2
+	}
+	return value
+}
+
+func normalizedStretch(value float64) float64 {
+	if value <= 0 {
+		return 1
+	}
+	if value < 0.5 {
+		return 0.5
+	}
+	if value > 2.5 {
+		return 2.5
+	}
+	return value
+}
+
+func normalizedGain(value float64) float64 {
+	if value <= 0 {
+		return 1
+	}
+	if value > 2 {
+		return 2
+	}
+	return value
+}
+
+func normalizedRepeat(value int) int {
+	if value <= 1 {
+		return 1
+	}
+	if value > 4 {
+		return 4
+	}
+	return value
+}
+
 func appendSilence(output []int16, sampleRate int, millis int) []int16 {
 	if millis <= 0 {
 		return output
@@ -282,10 +343,22 @@ func resample(pcm []int16, srcRate int, dstRate int) []int16 {
 }
 
 func resampleForSpeed(pcm []int16, speed float64) []int16 {
+	return resampleForSpeedFactor(pcm, normalizedSpeed(speed))
+}
+
+func resampleForSpeedFactor(pcm []int16, speed float64) []int16 {
 	if len(pcm) == 0 {
 		return nil
 	}
-	speed = normalizedSpeed(speed)
+	if speed <= 0 {
+		speed = 1
+	}
+	if speed < 0.25 {
+		speed = 0.25
+	}
+	if speed > 4 {
+		speed = 4
+	}
 	if math.Abs(speed-1) < 0.001 {
 		return append([]int16(nil), pcm...)
 	}
@@ -307,6 +380,21 @@ func interpolate(pcm []int16, outLen int, step float64) []int16 {
 		output[i] = int16(value)
 	}
 	return output
+}
+
+func applyGain(pcm []int16, gain float64) {
+	if len(pcm) == 0 || math.Abs(gain-1) < 0.001 {
+		return
+	}
+	for i, sample := range pcm {
+		value := int(math.Round(float64(sample) * gain))
+		if value > 32767 {
+			value = 32767
+		} else if value < -32768 {
+			value = -32768
+		}
+		pcm[i] = int16(value)
+	}
 }
 
 func applyFade(pcm []int16, sampleRate int) {
