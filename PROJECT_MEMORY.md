@@ -40,6 +40,8 @@ Current layout:
 Important UX rule:
 
 - If the user cannot preview/export because samples are missing, the UI should make the missing state obvious and steer them to recording.
+- Recording must happen inside guvoice. The Record tab uses browser/WebView2 `getUserMedia` + `MediaRecorder`; if there is no selected source, pressing Record creates one automatically before requesting microphone permission.
+- Avoid broad page-level inner scrolling on desktop. Keep the main tool surface fitted to the Wails window; only long source/sample/prompt lists should scroll.
 
 ## Current Implementation
 

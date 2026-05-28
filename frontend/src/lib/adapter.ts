@@ -50,7 +50,7 @@ declare global {
   }
 }
 
-const STORAGE_KEY = "guvoice.sources.v2";
+const STORAGE_KEY = "guvoice.sources.v3";
 
 const nowIso = () => new Date().toISOString();
 
@@ -78,9 +78,10 @@ const seedSources = (): VoiceSource[] => {
       updatedAt: createdAt,
       samples: SAMPLE_PROMPTS.slice(0, MIN_SAMPLE_TARGET).map((prompt, index) => ({
         id: `sample-demo-${index + 1}`,
+        promptId: prompt.id,
         label: prompt.label,
         text: prompt.text,
-        duration: 7 + index,
+        duration: 2 + index * 0.2,
         origin: index % 2 === 0 ? "recording" : "upload",
         createdAt
       }))
@@ -110,6 +111,9 @@ const writeSources = (sources: VoiceSource[]) => {
 
 const normalizeSource = (source: VoiceSource): VoiceSource => ({
   ...source,
+  name: source.name || "새 목소리",
+  speaker: source.speaker || "이름 없음",
+  note: source.note || "",
   samples: Array.isArray(source.samples) ? source.samples : [],
   targetSamples: source.targetSamples || MIN_SAMPLE_TARGET
 });
@@ -133,9 +137,9 @@ const analyzeFromSamples = (source: VoiceSource, text: string): AnalysisResult =
   const filled = Math.min(source.samples.length, target);
   const missing: MissingSample[] = [];
 
-  if (source.samples.length < source.targetSamples) {
+  if (source.samples.length < target) {
     missing.push({
-      token: `${source.targetSamples - source.samples.length}개`,
+      token: `${target - source.samples.length}개`,
       reason: "필수 샘플이 아직 채워지지 않았습니다.",
       severity: "missing"
     });
@@ -280,7 +284,7 @@ const fallbackApi = {
     return {
       id: createId("preview"),
       status: "ready",
-      message: "브라우저 데모 미리듣기 생성",
+      message: "브라우저 데모 미리듣기를 생성했습니다.",
       audioUrl: createDemoWav(request.text)
     } satisfies PreviewResult;
   },
@@ -299,7 +303,7 @@ const fallbackApi = {
 
     return {
       status: "ready",
-      message: "브라우저 데모 MP3 다운로드 준비",
+      message: "브라우저 데모 MP3 다운로드를 준비했습니다.",
       downloadUrl: URL.createObjectURL(blob)
     } satisfies ExportResult;
   },
@@ -309,7 +313,7 @@ const fallbackApi = {
       mode: "browser",
       label: "브라우저 데모",
       ready: true,
-      message: "Wails 바인딩 없음, localStorage fallback 사용"
+      message: "Wails 바인딩이 없어 localStorage fallback을 사용합니다."
     } satisfies EngineStatus;
   }
 };
