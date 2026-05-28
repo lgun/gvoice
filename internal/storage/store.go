@@ -19,6 +19,7 @@ import (
 	"guvoice/internal/catalog"
 	"guvoice/internal/ids"
 	"guvoice/internal/model"
+	"guvoice/internal/synth"
 )
 
 const stateVersion = 1
@@ -70,6 +71,65 @@ func (s *Store) BaseDir() string {
 
 func (s *Store) ExportsDir() string {
 	return s.exportsDir
+}
+
+func (s *Store) MP3ExportDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if dir := strings.TrimSpace(s.state.Settings.MP3ExportDirectory); dir != "" {
+		if samePath(dir, s.exportsDir) {
+			return s.exportsDir
+		}
+		return dir
+	}
+	return s.exportsDir
+}
+
+func (s *Store) ResolveMP3ExportDir() (string, error) {
+	dir := s.MP3ExportDir()
+	if samePath(dir, s.exportsDir) {
+		return s.exportsDir, nil
+	}
+	return prepareWritableDirectory(dir)
+}
+
+func (s *Store) IsDefaultMP3ExportDir(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	return dir == "" || samePath(dir, s.exportsDir)
+}
+
+func (s *Store) SettingsSnapshot() model.AppSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.Settings
+}
+
+func (s *Store) UpdateSettings(settings model.AppSettings) (model.AppSettings, error) {
+	dir := strings.TrimSpace(settings.MP3ExportDirectory)
+	if dir != "" {
+		if s.IsDefaultMP3ExportDir(dir) {
+			dir = ""
+		}
+	}
+	if dir != "" {
+		prepared, err := prepareWritableDirectory(dir)
+		if err != nil {
+			return model.AppSettings{}, err
+		}
+		if samePath(prepared, s.exportsDir) {
+			dir = ""
+		} else {
+			dir = prepared
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Settings.MP3ExportDirectory = dir
+	if err := s.saveLocked(); err != nil {
+		return model.AppSettings{}, err
+	}
+	return s.state.Settings, nil
 }
 
 func (s *Store) StateSnapshot() model.State {
@@ -365,6 +425,10 @@ func (s *Store) RegisterUpload(req model.RegisterUploadRequest) (model.Upload, e
 	if fileName == "" {
 		fileName = uploadID + extensionFor(mimeType, "")
 	}
+	durationMillis := req.DurationMillis
+	if strings.TrimSpace(req.PromptID) != "" && len(data) > 0 {
+		data, mimeType, durationMillis = normalizeWAVBlobIfPossible(fileName, mimeType, data, durationMillis)
+	}
 	upload := model.Upload{
 		ID:             uploadID,
 		SourceID:       sourceID,
@@ -373,7 +437,7 @@ func (s *Store) RegisterUpload(req model.RegisterUploadRequest) (model.Upload, e
 		Transcript:     strings.TrimSpace(req.Transcript),
 		Notes:          strings.TrimSpace(req.Notes),
 		PromptID:       strings.TrimSpace(req.PromptID),
-		DurationMillis: req.DurationMillis,
+		DurationMillis: durationMillis,
 		CreatedAt:      now,
 	}
 	if len(data) > 0 {
@@ -563,6 +627,7 @@ func (s *Store) saveLocked() error {
 }
 
 func (s *Store) writeSampleLocked(sourceID string, promptID string, fileName string, mimeType string, data []byte, transcript string, durationMillis int) (model.Sample, error) {
+	data, mimeType, durationMillis = normalizeWAVBlobIfPossible(fileName, mimeType, data, durationMillis)
 	sampleID := ids.New("sample")
 	relPath, sha, err := s.writeBlobLocked(sourceID, "prompts", sampleID, fileName, mimeType, data)
 	if err != nil {
@@ -603,6 +668,75 @@ func (s *Store) writeBlobLocked(sourceID string, section string, id string, file
 	}
 	sum := sha256.Sum256(data)
 	return relPath, hex.EncodeToString(sum[:]), nil
+}
+
+func normalizeWAVBlobIfPossible(fileName string, mimeType string, data []byte, durationMillis int) ([]byte, string, int) {
+	ext := strings.ToLower(filepath.Ext(fileName))
+	if !isWAVBlob(mimeType, ext) {
+		return data, mimeType, durationMillis
+	}
+	normalized, trimmedDuration, err := synth.NormalizeWAVSample(data, filepath.Base(fileName))
+	if err != nil {
+		return data, mimeType, durationMillis
+	}
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = "audio/wav"
+	}
+	if durationMillis <= 0 || trimmedDuration < durationMillis {
+		durationMillis = trimmedDuration
+	}
+	return normalized, mimeType, durationMillis
+}
+
+func isWAVBlob(mimeType string, ext string) bool {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "audio/wav", "audio/wave", "audio/x-wav", "audio/vnd.wave":
+		return true
+	}
+	return ext == ".wav"
+}
+
+func prepareWritableDirectory(dir string) (string, error) {
+	cleaned, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return "", fmt.Errorf("invalid MP3 export directory %q: %w", dir, err)
+	}
+	if err := os.MkdirAll(cleaned, 0700); err != nil {
+		return "", fmt.Errorf("could not create MP3 export directory %q: %w", cleaned, err)
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("could not access MP3 export directory %q: %w", cleaned, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("MP3 export path %q is not a directory", cleaned)
+	}
+	testFile, err := os.CreateTemp(cleaned, ".guvoice-write-test-*")
+	if err != nil {
+		return "", fmt.Errorf("MP3 export directory %q is not writable: %w", cleaned, err)
+	}
+	testPath := testFile.Name()
+	if err := testFile.Close(); err != nil {
+		_ = os.Remove(testPath)
+		return "", fmt.Errorf("MP3 export directory %q is not writable: %w", cleaned, err)
+	}
+	if err := os.Remove(testPath); err != nil {
+		return "", fmt.Errorf("MP3 export directory %q is not writable: %w", cleaned, err)
+	}
+	return cleaned, nil
+}
+
+func samePath(left string, right string) bool {
+	leftAbs, leftErr := filepath.Abs(filepath.Clean(left))
+	rightAbs, rightErr := filepath.Abs(filepath.Clean(right))
+	if leftErr != nil || rightErr != nil {
+		leftClean := filepath.Clean(left)
+		rightClean := filepath.Clean(right)
+		return leftClean == rightClean || strings.EqualFold(leftClean, rightClean)
+	}
+	leftClean := filepath.Clean(leftAbs)
+	rightClean := filepath.Clean(rightAbs)
+	return leftClean == rightClean || strings.EqualFold(leftClean, rightClean)
 }
 
 func (s *Store) sourceExistsLocked(sourceID string) bool {

@@ -1,6 +1,7 @@
 package synth
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -178,6 +179,9 @@ func RenderSequence(steps []SequenceStep, opts Options) (Buffer, int, error) {
 		pcm := resample(buffer.Samples, buffer.SampleRate, sampleRate)
 		pcm = applyNoiseReduction(pcm, opts.NoiseReduction)
 		pcm = trimSilenceWithThreshold(pcm, sampleRate, silenceThreshold(opts.NoiseReduction))
+		if !HasAudibleContent(pcm, sampleRate) {
+			return Buffer{}, 0, fmt.Errorf("sample %s has no audible content", step.PromptID)
+		}
 		pcm = applyPitchShift(pcm, opts.Pitch)
 		stepSpeed := speed * normalizedStepSpeed(step.Speed) / normalizedStretch(step.Stretch)
 		pcm = resampleForSpeedFactor(pcm, stepSpeed)
@@ -215,7 +219,23 @@ func WriteWAV(path string, sampleRate int, pcm []int16) error {
 		return err
 	}
 	defer file.Close()
+	return writeWAV(file, sampleRate, pcm)
+}
 
+func EncodeWAV(sampleRate int, pcm []int16) ([]byte, error) {
+	if len(pcm) == 0 {
+		return nil, errors.New("pcm is empty")
+	}
+	var buffer bytes.Buffer
+	if err := writeWAV(&buffer, normalizedSampleRate(sampleRate), pcm); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+func writeWAV(file interface {
+	Write([]byte) (int, error)
+}, sampleRate int, pcm []int16) error {
 	byteRate := sampleRate * 2
 	dataSize := uint32(len(pcm) * 2)
 	riffSize := uint32(36) + dataSize
@@ -261,6 +281,22 @@ func WriteWAV(path string, sampleRate int, pcm []int16) error {
 		}
 	}
 	return nil
+}
+
+func NormalizeWAVSample(data []byte, name string) ([]byte, int, error) {
+	buffer, err := DecodeWAV(data, name)
+	if err != nil {
+		return nil, 0, err
+	}
+	pcm := TrimSampleSilence(buffer.Samples, buffer.SampleRate)
+	if len(pcm) == 0 || !HasAudibleContent(pcm, buffer.SampleRate) {
+		return nil, 0, errors.New("wav sample has no audio")
+	}
+	encoded, err := EncodeWAV(buffer.SampleRate, pcm)
+	if err != nil {
+		return nil, 0, err
+	}
+	return encoded, len(pcm) * 1000 / buffer.SampleRate, nil
 }
 
 func WriteMP3(path string, sampleRate int, pcm []int16) error {
@@ -380,6 +416,30 @@ func appendSilence(output []int16, sampleRate int, millis int) []int16 {
 
 func trimSilence(pcm []int16, sampleRate int) []int16 {
 	return trimSilenceWithThreshold(pcm, sampleRate, 420)
+}
+
+func TrimSampleSilence(pcm []int16, sampleRate int) []int16 {
+	if len(pcm) == 0 {
+		return nil
+	}
+	peak := peakAbs(pcm)
+	if peak < 260 {
+		return append([]int16(nil), pcm...)
+	}
+	threshold := max(260, min(1400, peak/35))
+	return trimSilenceWithThreshold(pcm, sampleRate, threshold)
+}
+
+func HasAudibleContent(pcm []int16, sampleRate int) bool {
+	if len(pcm) == 0 {
+		return false
+	}
+	for _, sample := range pcm {
+		if abs16(sample) >= 300 {
+			return true
+		}
+	}
+	return false
 }
 
 func trimSilenceWithThreshold(pcm []int16, sampleRate int, threshold int) []int16 {
@@ -504,26 +564,40 @@ func applyClarity(pcm []int16, clarity float64) []int16 {
 	}
 	level := clampFloat64(clarity, 0, 100) / 100
 	output := append([]int16(nil), pcm...)
-	if level <= 0 {
+
+	if level < 0.5 {
+		amount := (0.5 - level) * 2
+		alpha := 0.62 - amount*0.43
+		var low float64
+		for i, sample := range output {
+			current := float64(sample)
+			low += alpha * (current - low)
+			mixed := current*(1-amount*0.7) + low*(amount*0.9)
+			if i > 0 && i+1 < len(output) {
+				neighbors := (float64(output[i-1]) + float64(pcm[i+1])) * 0.5
+				mixed = mixed*(1-amount*0.28) + neighbors*(amount*0.28)
+			}
+			output[i] = clampInt16(mixed * (1 - amount*0.18))
+		}
+		normalizePeak(output, int(10500+level*9000))
 		return output
 	}
 
-	var previousIn float64
-	var previousOut float64
-	alpha := 0.965 - level*0.12
-	if alpha < 0.72 {
-		alpha = 0.72
-	}
+	amount := (level - 0.5) * 2
+	var low float64
+	var previous float64
+	alpha := 0.32
 	for i, sample := range output {
 		current := float64(sample)
-		high := alpha * (previousOut + current - previousIn)
-		mixed := current*(1-level*0.45) + high*(level*0.75)
+		low += alpha * (current - low)
+		high := current - low
+		transient := current - previous
+		mixed := current*(1+amount*0.06) + high*(amount*0.72) + transient*(amount*0.18)
 		output[i] = clampInt16(mixed)
-		previousIn = current
-		previousOut = high
+		previous = current
 	}
 
-	targetPeak := int(15000 + level*9000)
+	targetPeak := int(16000 + amount*8000)
 	normalizePeak(output, targetPeak)
 	return output
 }
@@ -593,6 +667,16 @@ func absInt(value int) int {
 		return -value
 	}
 	return value
+}
+
+func peakAbs(samples []int16) int {
+	peak := 0
+	for _, sample := range samples {
+		if value := abs16(sample); value > peak {
+			peak = value
+		}
+	}
+	return peak
 }
 
 func clampFloat64(value float64, minValue float64, maxValue float64) float64 {

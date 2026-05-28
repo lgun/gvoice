@@ -82,6 +82,45 @@ func TestWriteMP3LowSampleRateCreatesFrameHeader(t *testing.T) {
 	}
 }
 
+func TestNormalizeWAVSampleTrimsLeadingAndTrailingSilence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "padded.wav")
+	pcm := make([]int16, 0, 1900)
+	pcm = append(pcm, make([]int16, 700)...)
+	for i := 0; i < 500; i++ {
+		if i%24 < 12 {
+			pcm = append(pcm, 9000)
+		} else {
+			pcm = append(pcm, -9000)
+		}
+	}
+	pcm = append(pcm, make([]int16, 700)...)
+	if err := WriteWAV(path, 8000, pcm); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	normalized, duration, err := NormalizeWAVSample(data, "padded.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := DecodeWAV(normalized, "normalized.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buffer.Samples) >= len(pcm) {
+		t.Fatalf("expected trim to shorten sample: before=%d after=%d", len(pcm), len(buffer.Samples))
+	}
+	if len(buffer.Samples) <= 500 {
+		t.Fatalf("expected trim to keep voiced content plus small padding, got %d samples", len(buffer.Samples))
+	}
+	if duration != len(buffer.Samples)*1000/buffer.SampleRate {
+		t.Fatalf("duration mismatch: got %d for %d samples", duration, len(buffer.Samples))
+	}
+}
+
 func TestShineMonoInputPreservesBlocksForMPEGVersions(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -112,6 +151,26 @@ func TestShineMonoInputPreservesBlocksForMPEGVersions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClarityLowMufflesAndHighSharpensTransientEnergy(t *testing.T) {
+	pcm := make([]int16, 1000)
+	for i := range pcm {
+		if i%32 < 16 {
+			pcm[i] = 9000
+		} else {
+			pcm[i] = -9000
+		}
+	}
+
+	muffled := applyClarity(pcm, 0)
+	clear := applyClarity(pcm, 100)
+	if transientEnergy(muffled) >= transientEnergy(clear) {
+		t.Fatalf("expected high clarity to preserve more edge energy: low=%d high=%d", transientEnergy(muffled), transientEnergy(clear))
+	}
+	if equalSamples(muffled, pcm) {
+		t.Fatal("expected clarity=0 to alter and muffle PCM")
 	}
 }
 
@@ -225,4 +284,16 @@ func maxAbs(samples []int16) int {
 		}
 	}
 	return peak
+}
+
+func transientEnergy(samples []int16) int64 {
+	var total int64
+	for i := 1; i < len(samples); i++ {
+		diff := int(samples[i]) - int(samples[i-1])
+		if diff < 0 {
+			diff = -diff
+		}
+		total += int64(diff)
+	}
+	return total
 }

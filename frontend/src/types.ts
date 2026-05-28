@@ -74,6 +74,14 @@ export interface EngineStatus {
   message: string;
 }
 
+export interface OutputDirectorySettings {
+  path: string;
+  defaultPath: string;
+  isDefault: boolean;
+  source: "wails" | "browser";
+  message: string;
+}
+
 export interface SamplePrompt {
   id: string;
   label: string;

@@ -1,11 +1,12 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { voiceApi } from "./lib/adapter";
-import { decodeAudioFileToMonoWav } from "./lib/audio";
+import { decodeAudioFileToMonoWav, wavDataUrlFromPcm } from "./lib/audio";
 import {
   AnalysisResult,
   EngineStatus,
   MAX_SAMPLE_TARGET,
   MIN_SAMPLE_TARGET,
+  OutputDirectorySettings,
   PreviewResult,
   SAMPLE_PROMPTS,
   SamplePrompt,
@@ -61,72 +62,6 @@ type WindowWithWebkitAudio = Window & {
 
 const getAudioContextConstructor = () =>
   window.AudioContext ?? (window as WindowWithWebkitAudio).webkitAudioContext;
-
-const mergePcmChunks = (chunks: Float32Array[]) => {
-  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const merged = new Float32Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
-};
-
-const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    const chunk = bytes.subarray(offset, offset + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-};
-
-const encodeMono16Wav = (samples: Float32Array, sampleRate: number) => {
-  const dataSize = samples.length * 2;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  const writeString = (offset: number, value: string) => {
-    for (let i = 0; i < value.length; i += 1) {
-      view.setUint8(offset + i, value.charCodeAt(i));
-    }
-  };
-
-  writeString(0, "RIFF");
-  view.setUint32(4, 36 + dataSize, true);
-  writeString(8, "WAVE");
-  writeString(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(36, "data");
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  for (const sample of samples) {
-    const clipped = Math.max(-1, Math.min(1, sample));
-    view.setInt16(offset, clipped < 0 ? clipped * 0x8000 : clipped * 0x7fff, true);
-    offset += 2;
-  }
-
-  return buffer;
-};
-
-const wavDataUrlFromPcm = (chunks: Float32Array[], sampleRate: number) => {
-  const samples = mergePcmChunks(chunks);
-  const buffer = encodeMono16Wav(samples, sampleRate);
-  return {
-    dataUrl: `data:audio/wav;base64,${arrayBufferToBase64(buffer)}`,
-    previewUrl: URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }))
-  };
-};
 
 function ProgressBar({ value }: { value: number }) {
   return (
@@ -441,6 +376,14 @@ function RecordTab({
 
   const selectedPrompt = SAMPLE_PROMPTS.find((prompt) => prompt.id === selectedPromptId) ?? SAMPLE_PROMPTS[0];
   const recordingSupported = Boolean(navigator.mediaDevices?.getUserMedia) && Boolean(getAudioContextConstructor());
+  const requiredPrompts = useMemo(() => requiredPromptsFor(selectedSource), [selectedSource?.targetSamples]);
+  const filledPromptIds = useMemo(() => filledPromptIdsOf(selectedSource), [selectedSource?.samples]);
+  const missingPrompts = useMemo(
+    () => requiredPrompts.filter((prompt) => !filledPromptIds.has(prompt.id)),
+    [filledPromptIds, requiredPrompts]
+  );
+  const selectedPromptFilled = filledPromptIds.has(selectedPrompt.id);
+  const nextMissingPrompt = missingPrompts[0];
 
   useEffect(() => {
     if (!isRecording) {
@@ -454,10 +397,61 @@ function RecordTab({
     return () => window.clearInterval(timer);
   }, [isRecording]);
 
+  useEffect(() => {
+    if (isRecording || requiredPrompts.some((prompt) => prompt.id === selectedPromptId)) {
+      return;
+    }
+
+    applyPrompt(nextMissingPrompt ?? requiredPrompts[0] ?? SAMPLE_PROMPTS[0]);
+  }, [isRecording, nextMissingPrompt, requiredPrompts, selectedPromptId]);
+
   const applyPrompt = (prompt: SamplePrompt) => {
     setSelectedPromptId(prompt.id);
     setLabel(prompt.label);
     setTranscript(prompt.text);
+  };
+
+  const findNextMissingPrompt = (completedPromptId?: string, skipPromptId?: string) => {
+    const treatedAsFilled = new Set(filledPromptIds);
+    if (completedPromptId) {
+      treatedAsFilled.add(completedPromptId);
+    }
+
+    const startIndex = Math.max(0, requiredPrompts.findIndex((prompt) => prompt.id === selectedPromptId));
+    const ordered = [...requiredPrompts.slice(startIndex + 1), ...requiredPrompts.slice(0, startIndex + 1)];
+    return ordered.find((prompt) => prompt.id !== skipPromptId && !treatedAsFilled.has(prompt.id));
+  };
+
+  const moveToNextMissing = (completedPromptId?: string, skipPromptId?: string) => {
+    const nextPrompt = findNextMissingPrompt(completedPromptId, skipPromptId);
+    if (nextPrompt) {
+      applyPrompt(nextPrompt);
+      return true;
+    }
+    return false;
+  };
+
+  const goToNextMissing = () => {
+    if (moveToNextMissing()) {
+      setRecorderNotice("다음 누락 항목으로 이동했습니다.");
+      return;
+    }
+    setRecorderNotice("필수 샘플이 모두 채워졌습니다.");
+  };
+
+  const skipCurrentPrompt = () => {
+    if (moveToNextMissing(undefined, selectedPrompt.id)) {
+      setRecorderNotice("현재 항목을 건너뛰고 다음 누락 항목으로 이동했습니다.");
+      return;
+    }
+    setRecorderNotice("건너뛸 다음 누락 항목이 없습니다.");
+  };
+
+  const rerecordCurrentPrompt = async () => {
+    if (isRecording || isPreparing) {
+      return;
+    }
+    await startRecording();
   };
 
   const resolveSource = async () => {
@@ -569,7 +563,6 @@ function RecordTab({
     const prompt = recordingPromptRef.current ?? selectedPrompt;
     const chunks = pcmChunksRef.current;
     const sampleRate = audioContextRef.current?.sampleRate ?? 44100;
-    const duration = Math.max(0.2, (Date.now() - startedAtRef.current) / 1000);
     cleanupRecording();
     pcmChunksRef.current = [];
     recordingSourceRef.current = null;
@@ -586,7 +579,11 @@ function RecordTab({
     }
 
     try {
-      const { dataUrl, previewUrl } = wavDataUrlFromPcm(chunks, sampleRate);
+      const { dataUrl, previewUrl, duration, trimmedSamples } = wavDataUrlFromPcm(
+        chunks,
+        sampleRate,
+        `recording-${prompt.id}.wav`
+      );
       setLastPreviewUrl(previewUrl);
 
       await onAddSample(source.id, {
@@ -599,7 +596,13 @@ function RecordTab({
         audioUrl: previewUrl,
         dataBase64: dataUrl
       });
-      setRecorderNotice("WAV 녹음 샘플을 저장했습니다. 방금 녹음한 소리는 아래에서 확인할 수 있습니다.");
+      const moved = moveToNextMissing(prompt.id);
+      const trimNote = trimmedSamples > 0 ? " 앞뒤 공백을 잘라 저장했습니다." : "";
+      setRecorderNotice(
+        moved
+          ? `저장했습니다.${trimNote} 다음 누락 항목으로 이동했습니다.`
+          : `필수 샘플을 모두 채웠습니다.${trimNote}`
+      );
     } catch (error) {
       setRecorderError(error instanceof Error ? error.message : "녹음 WAV를 저장하지 못했습니다.");
     }
@@ -617,8 +620,10 @@ function RecordTab({
     }
     setRecorderError("");
     try {
+      let trimmedAny = false;
       for (const file of files) {
         const converted = await decodeAudioFileToMonoWav(file);
+        trimmedAny = trimmedAny || converted.trimmedSamples > 0;
         await onAddSample(source.id, {
           promptId: selectedPrompt.id,
           label: label.trim() || selectedPrompt.label || file.name,
@@ -630,12 +635,15 @@ function RecordTab({
           dataBase64: converted.dataUrl
         });
       }
+      moveToNextMissing(selectedPrompt.id);
+      setRecorderNotice(
+        `${files.length}개 파일을 현재 샘플 항목에 등록했습니다.${trimmedAny ? " 앞뒤 공백을 잘라 저장했습니다." : ""}`
+      );
     } catch (error) {
       setRecorderError(error instanceof Error ? error.message : "WAV 파일을 업로드하지 못했습니다.");
       event.target.value = "";
       return;
     }
-    setRecorderNotice(`${files.length}개 파일을 현재 샘플 항목에 등록했습니다.`);
     event.target.value = "";
   };
 
@@ -659,9 +667,28 @@ function RecordTab({
 
         <div className="record-main">
           <div className="current-prompt">
-            <FieldLabel>읽을 샘플</FieldLabel>
-            <strong>{selectedPrompt.label}</strong>
+            <div className="prompt-card-head">
+              <div>
+                <FieldLabel>읽을 샘플</FieldLabel>
+                <strong>{selectedPrompt.label}</strong>
+              </div>
+              <span className={`prompt-state ${selectedPromptFilled ? "is-filled" : ""}`}>
+                {selectedPromptFilled ? "저장됨" : "누락"}
+              </span>
+            </div>
             <p>{selectedPrompt.text}</p>
+            <div className="prompt-actions">
+              <button type="button" onClick={goToNextMissing} disabled={!missingPrompts.length || isRecording}>
+                다음 누락
+              </button>
+              <button type="button" onClick={skipCurrentPrompt} disabled={missingPrompts.length <= 1 || isRecording}>
+                건너뛰기
+              </button>
+              <button type="button" onClick={rerecordCurrentPrompt} disabled={isRecording || isPreparing}>
+                재녹음
+              </button>
+              <span>저장 후 자동 진행 · 남은 {missingPrompts.length}개</span>
+            </div>
           </div>
 
           <div className="sample-form compact-form">
@@ -709,7 +736,13 @@ function RecordTab({
           <div className="prompt-grid">
             {SAMPLE_PROMPTS.map((prompt) => (
               <button
-                className={prompt.id === selectedPromptId ? "is-active" : ""}
+                className={[
+                  prompt.id === selectedPromptId ? "is-active" : "",
+                  filledPromptIds.has(prompt.id) ? "is-filled" : "",
+                  missingPrompts.some((item) => item.id === prompt.id) ? "is-missing" : ""
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 key={prompt.id}
                 type="button"
                 onClick={() => applyPrompt(prompt)}
@@ -756,14 +789,20 @@ function RecordTab({
 
 function ManageTab({
   selectedSource,
+  outputDirectory,
   onCreate,
   onUpdate,
-  onDelete
+  onDelete,
+  onSetOutputDirectory,
+  onChooseOutputDirectory
 }: {
   selectedSource?: VoiceSource;
+  outputDirectory: OutputDirectorySettings | null;
   onCreate: (input: { name: string; speaker: string; note: string; targetSamples: number }) => Promise<VoiceSource>;
   onUpdate: (patch: Partial<VoiceSource>) => void;
   onDelete: () => void;
+  onSetOutputDirectory: (path: string) => Promise<void>;
+  onChooseOutputDirectory: () => Promise<void>;
 }) {
   const [newName, setNewName] = useState("");
   const [newSpeaker, setNewSpeaker] = useState("");
@@ -773,6 +812,7 @@ function ManageTab({
   const [editSpeaker, setEditSpeaker] = useState("");
   const [editNote, setEditNote] = useState("");
   const [editTarget, setEditTarget] = useState(MIN_SAMPLE_TARGET);
+  const [outputPath, setOutputPath] = useState("");
 
   useEffect(() => {
     setEditName(selectedSource?.name ?? "");
@@ -780,6 +820,10 @@ function ManageTab({
     setEditNote(selectedSource?.note ?? "");
     setEditTarget(clampTargetSamples(selectedSource?.targetSamples));
   }, [selectedSource]);
+
+  useEffect(() => {
+    setOutputPath(outputDirectory?.isDefault ? "" : outputDirectory?.path ?? "");
+  }, [outputDirectory?.isDefault, outputDirectory?.path]);
 
   const submitCreate = async (event: FormEvent) => {
     event.preventDefault();
@@ -804,6 +848,15 @@ function ManageTab({
       targetSamples: clampTargetSamples(editTarget)
     });
   };
+
+  const submitOutputDirectory = async (event: FormEvent) => {
+    event.preventDefault();
+    await onSetOutputDirectory(outputPath);
+  };
+
+  const outputPathPlaceholder = outputDirectory?.defaultPath
+    ? `비워두면 기본 폴더를 사용합니다: ${outputDirectory.defaultPath}`
+    : "비워두면 기본 exports 폴더를 사용합니다.";
 
   return (
     <section className="manage-grid">
@@ -877,6 +930,37 @@ function ManageTab({
         <button className="danger" type="button" onClick={onDelete} disabled={!selectedSource}>
           소스 삭제
         </button>
+      </form>
+
+      <form className="manage-form output-form" onSubmit={submitOutputDirectory}>
+        <div className="section-head compact">
+          <div>
+            <FieldLabel>저장 위치</FieldLabel>
+            <h2>MP3 파일 저장 폴더</h2>
+          </div>
+          <div className="button-pair">
+            <button type="button" onClick={onChooseOutputDirectory}>
+              찾아보기
+            </button>
+            <button className="primary" type="submit">
+              저장
+            </button>
+          </div>
+        </div>
+        <label>
+          <FieldLabel>폴더 경로</FieldLabel>
+          <input
+            value={outputPath}
+            onChange={(event) => setOutputPath(event.target.value)}
+            placeholder={outputPathPlaceholder}
+          />
+        </label>
+        <p className="info-line">
+          {outputDirectory?.message ??
+            "백엔드 설정 API가 연결되면 이 위치에 MP3 저장 결과가 만들어집니다."}
+          {outputDirectory?.isDefault && outputDirectory.defaultPath ? ` 기본 폴더: ${outputDirectory.defaultPath}` : ""}
+          {outputDirectory?.source === "browser" ? " 브라우저 데모 값은 localStorage에만 저장됩니다." : ""}
+        </p>
       </form>
     </section>
   );
@@ -979,6 +1063,7 @@ export default function App() {
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
+  const [outputDirectory, setOutputDirectory] = useState<OutputDirectorySettings | null>(null);
   const [notice, setNotice] = useState("");
 
   const selectedSource = useMemo(
@@ -996,6 +1081,7 @@ export default function App() {
   useEffect(() => {
     refreshSources();
     voiceApi.getEngineStatus().then(setEngineStatus);
+    voiceApi.getOutputDirectory().then(setOutputDirectory);
   }, []);
 
   useEffect(() => {
@@ -1100,6 +1186,26 @@ export default function App() {
     setNotice("샘플을 삭제했습니다.");
   };
 
+  const handleSetOutputDirectory = async (path: string) => {
+    try {
+      const settings = await voiceApi.setOutputDirectory(path);
+      setOutputDirectory(settings);
+      setNotice(settings.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "MP3 저장 위치를 저장하지 못했습니다.");
+    }
+  };
+
+  const handleChooseOutputDirectory = async () => {
+    try {
+      const settings = await voiceApi.chooseOutputDirectory();
+      setOutputDirectory(settings);
+      setNotice(settings.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "MP3 저장 위치를 선택하지 못했습니다.");
+    }
+  };
+
   const handlePreview = async () => {
     if (!selectedSource || !text.trim()) {
       return;
@@ -1192,9 +1298,12 @@ export default function App() {
           {activeTab === "manage" ? (
             <ManageTab
               selectedSource={selectedSource}
+              outputDirectory={outputDirectory}
               onCreate={handleCreateSource}
               onUpdate={handleUpdateSource}
               onDelete={handleDeleteSource}
+              onSetOutputDirectory={handleSetOutputDirectory}
+              onChooseOutputDirectory={handleChooseOutputDirectory}
             />
           ) : null}
         </div>

@@ -6,6 +6,7 @@ type AppInfo struct {
 	Name                  string           `json:"name"`
 	DisplayName           string           `json:"displayName"`
 	DataDir               string           `json:"dataDir"`
+	MP3ExportDirectory    string           `json:"mp3ExportDirectory"`
 	SelectedVoiceSourceID string           `json:"selectedVoiceSourceId"`
 	MinimumSampleSetID    string           `json:"minimumSampleSetId"`
 	FallbackPolicy        []FallbackPolicy `json:"fallbackPolicy"`
@@ -20,7 +21,12 @@ type State struct {
 	Uploads               []Upload          `json:"uploads"`
 	Syntheses             []SynthesisResult `json:"syntheses"`
 	Exports               []ExportResult    `json:"exports"`
+	Settings              AppSettings       `json:"settings"`
 	UpdatedAt             time.Time         `json:"updatedAt"`
+}
+
+type AppSettings struct {
+	MP3ExportDirectory string `json:"mp3ExportDirectory"`
 }
 
 type VoiceSource struct {

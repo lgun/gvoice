@@ -60,6 +60,7 @@ func (a *App) getAppInfo() (model.AppInfo, error) {
 		Name:                  "guvoice",
 		DisplayName:           "구보이스",
 		DataDir:               store.BaseDir(),
+		MP3ExportDirectory:    store.SettingsSnapshot().MP3ExportDirectory,
 		SelectedVoiceSourceID: state.SelectedVoiceSourceID,
 		MinimumSampleSetID:    catalog.MinimumKoreanSampleSetID,
 		FallbackPolicy:        catalog.DefaultFallbackPolicy(),
@@ -151,7 +152,7 @@ func (a *App) checkMissingSamples(req model.CheckMissingSamplesRequest) (model.M
 		return model.MissingSampleReport{}, err
 	}
 	analysis := analyzeKoreanText(req.Text)
-	samples := store.ListSamples(sourceID)
+	samples := usableSamplesOnDisk(store, store.ListSamples(sourceID))
 	return buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, source.TargetSamples), nil
 }
 
@@ -173,7 +174,7 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 	if err != nil {
 		return model.SynthesisResult{}, err
 	}
-	samples := store.ListSamples(sourceID)
+	samples := usableSamplesOnDisk(store, store.ListSamples(sourceID))
 	missingRequired := missingRequiredPromptIDs(source.TargetSamples, samples)
 	if len(missingRequired) > 0 {
 		return model.SynthesisResult{}, fmt.Errorf("필수 WAV 샘플이 부족합니다: %s", strings.Join(missingRequired, ", "))
@@ -192,9 +193,19 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		baseName = resultID
 	}
 	baseName = storage.SafeFileBase(baseName)
-	audioRel := filepath.ToSlash(filepath.Join("exports", baseName+"."+format))
 	manifestRel := filepath.ToSlash(filepath.Join("exports", baseName+".json"))
-	audioPath := filepath.Join(store.BaseDir(), audioRel)
+	audioRef := filepath.ToSlash(filepath.Join("exports", baseName+"."+format))
+	audioPath := filepath.Join(store.BaseDir(), filepath.FromSlash(audioRef))
+	if format == "mp3" {
+		mp3Dir, err := store.ResolveMP3ExportDir()
+		if err != nil {
+			return model.SynthesisResult{}, err
+		}
+		audioPath = filepath.Join(mp3Dir, baseName+".mp3")
+		if filepath.Clean(mp3Dir) != filepath.Clean(store.ExportsDir()) {
+			audioRef = audioPath
+		}
+	}
 	manifestPath := filepath.Join(store.BaseDir(), manifestRel)
 
 	steps, usedPromptIDs := sequenceForText(req.Text)
@@ -239,7 +250,7 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		SourceID:       sourceID,
 		Text:           req.Text,
 		Format:         format,
-		AudioPath:      audioRel,
+		AudioPath:      audioRef,
 		ManifestPath:   manifestRel,
 		DurationMillis: duration,
 		CreatedAt:      time.Now().UTC(),
@@ -435,6 +446,24 @@ func buildPromptMissingSampleReport(sourceID string, text string, analysis model
 	sort.Strings(report.MissingPromptIDs)
 	report.ReadyForMVP = strings.TrimSpace(text) != "" && len(report.MissingPromptIDs) == 0
 	return report
+}
+
+func usableSamplesOnDisk(store *storage.Store, samples []model.Sample) []model.Sample {
+	usable := make([]model.Sample, 0, len(samples))
+	for _, sample := range samples {
+		if !sampleUsableForSynthesis(sample) || strings.TrimSpace(sample.Path) == "" {
+			continue
+		}
+		buffer, err := synth.ReadWAV(storedAudioPath(store, sample.Path))
+		if err != nil {
+			continue
+		}
+		if !synth.HasAudibleContent(buffer.Samples, buffer.SampleRate) {
+			continue
+		}
+		usable = append(usable, sample)
+	}
+	return usable
 }
 
 func buildMissingSampleReport(sourceID string, text string, analysis model.TextAnalysis, samples []model.Sample) model.MissingSampleReport {

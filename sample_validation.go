@@ -19,8 +19,12 @@ func validateWAVSampleBlob(fileName string, dataBase64 string, fallbackMime stri
 	if mimeType != "" && !isWAVMime(mimeType) && ext != ".wav" {
 		return fmt.Errorf("WAV 샘플만 합성에 사용할 수 있습니다. %s 파일은 WAV로 변환해서 업로드하세요", mimeType)
 	}
-	if _, err := synth.DecodeWAV(data, filepath.Base(fileName)); err != nil {
+	buffer, err := synth.DecodeWAV(data, filepath.Base(fileName))
+	if err != nil {
 		return fmt.Errorf("합성 가능한 WAV/PCM 샘플이 아닙니다: %w", err)
+	}
+	if !synth.HasAudibleContent(buffer.Samples, buffer.SampleRate) {
+		return errors.New("WAV sample has no audible content")
 	}
 	return nil
 }

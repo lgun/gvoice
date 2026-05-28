@@ -3,6 +3,7 @@ export type EncodedWav = {
   previewUrl: string;
   duration: number;
   fileName: string;
+  trimmedSamples: number;
 };
 
 type WindowWithWebkitAudio = Window & {
@@ -69,13 +70,47 @@ export const encodeMono16Wav = (samples: Float32Array, sampleRate: number) => {
   return buffer;
 };
 
-export const wavDataUrlFromPcm = (chunks: Float32Array[], sampleRate: number) => {
-  const samples = mergePcmChunks(chunks);
-  const buffer = encodeMono16Wav(samples, sampleRate);
+const trimSilence = (samples: Float32Array, sampleRate: number) => {
+  const threshold = 0.012;
+  const padding = Math.floor(sampleRate * 0.035);
+  let first = 0;
+  let last = samples.length - 1;
+
+  while (first < samples.length && Math.abs(samples[first]) < threshold) {
+    first += 1;
+  }
+  while (last > first && Math.abs(samples[last]) < threshold) {
+    last -= 1;
+  }
+
+  if (first >= samples.length) {
+    return samples;
+  }
+
+  const start = Math.max(0, first - padding);
+  const end = Math.min(samples.length, last + padding + 1);
+  return samples.slice(start, end);
+};
+
+export const encodePcmToTrimmedMonoWav = (
+  samples: Float32Array,
+  sampleRate: number,
+  fileName = "sample.wav"
+): EncodedWav => {
+  const trimmed = trimSilence(samples, sampleRate);
+  const buffer = encodeMono16Wav(trimmed, sampleRate);
   return {
     dataUrl: `data:audio/wav;base64,${arrayBufferToBase64(buffer)}`,
-    previewUrl: URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }))
+    previewUrl: URL.createObjectURL(new Blob([buffer], { type: "audio/wav" })),
+    duration: trimmed.length / sampleRate,
+    fileName,
+    trimmedSamples: samples.length - trimmed.length
   };
+};
+
+export const wavDataUrlFromPcm = (chunks: Float32Array[], sampleRate: number, fileName = "recording.wav") => {
+  const samples = mergePcmChunks(chunks);
+  return encodePcmToTrimmedMonoWav(samples, sampleRate, fileName);
 };
 
 export const decodeAudioFileToMonoWav = async (file: File): Promise<EncodedWav> => {
@@ -89,14 +124,8 @@ export const decodeAudioFileToMonoWav = async (file: File): Promise<EncodedWav> 
     const buffer = await file.arrayBuffer();
     const decoded = await context.decodeAudioData(buffer.slice(0));
     const mono = downmixToMono(decoded);
-    const wavBuffer = encodeMono16Wav(mono, decoded.sampleRate);
     const baseName = file.name.replace(/\.[^.]+$/, "") || "upload";
-    return {
-      dataUrl: `data:audio/wav;base64,${arrayBufferToBase64(wavBuffer)}`,
-      previewUrl: URL.createObjectURL(new Blob([wavBuffer], { type: "audio/wav" })),
-      duration: decoded.duration,
-      fileName: `${baseName}.wav`
-    };
+    return encodePcmToTrimmedMonoWav(mono, decoded.sampleRate, `${baseName}.wav`);
   } catch (error) {
     throw new Error(
       error instanceof Error

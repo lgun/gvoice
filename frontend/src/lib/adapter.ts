@@ -5,6 +5,7 @@ import {
   MAX_SAMPLE_TARGET,
   MIN_SAMPLE_TARGET,
   MissingSample,
+  OutputDirectorySettings,
   PreviewResult,
   SAMPLE_PROMPTS,
   SynthesisRequest,
@@ -39,6 +40,17 @@ interface WailsApp {
   ) => Promise<PreviewResult> | PreviewResult;
   ExportMP3?: (request: SynthesisRequest) => Promise<ExportResult> | ExportResult;
   GetEngineStatus?: () => Promise<EngineStatus> | EngineStatus;
+  GetOutputDirectory?: () =>
+    | Promise<Partial<OutputDirectorySettings> | string>
+    | Partial<OutputDirectorySettings>
+    | string;
+  SetOutputDirectory?: (
+    path: string
+  ) => Promise<Partial<OutputDirectorySettings> | string> | Partial<OutputDirectorySettings> | string;
+  ChooseOutputDirectory?: () =>
+    | Promise<Partial<OutputDirectorySettings> | string>
+    | Partial<OutputDirectorySettings>
+    | string;
 }
 
 declare global {
@@ -52,6 +64,7 @@ declare global {
 }
 
 const STORAGE_KEY = "guvoice.sources.v3";
+const OUTPUT_DIRECTORY_KEY = "guvoice.outputDirectory.v1";
 
 const nowIso = () => new Date().toISOString();
 
@@ -121,6 +134,33 @@ const normalizeSource = (source: VoiceSource): VoiceSource => ({
   samples: Array.isArray(source.samples) ? source.samples : [],
   targetSamples: clampTargetSamples(source.targetSamples)
 });
+
+const normalizeOutputDirectory = (
+  value?: Partial<OutputDirectorySettings> | string | null,
+  source: OutputDirectorySettings["source"] = hasWails() ? "wails" : "browser"
+): OutputDirectorySettings => {
+  if (typeof value === "string") {
+    const path = value.trim();
+    return {
+      path,
+      defaultPath: "",
+      isDefault: !path,
+      source,
+      message: path ? "저장 위치를 불러왔습니다." : "기본 저장 위치를 사용합니다."
+    };
+  }
+
+  const path = value?.path?.trim() ?? "";
+  const defaultPath = value?.defaultPath?.trim() ?? "";
+  const isDefault = value?.isDefault ?? !path;
+  return {
+    path: isDefault ? "" : path,
+    defaultPath,
+    isDefault,
+    source: value?.source ?? source,
+    message: value?.message ?? (isDefault ? "기본 저장 위치를 사용합니다." : "저장 위치를 불러왔습니다.")
+  };
+};
 
 const extractTokens = (text: string) => {
   const normalized = text
@@ -318,6 +358,23 @@ const fallbackApi = {
       ready: true,
       message: "Wails 바인딩이 없어 localStorage fallback을 사용합니다."
     } satisfies EngineStatus;
+  },
+
+  async getOutputDirectory() {
+    return normalizeOutputDirectory(localStorage.getItem(OUTPUT_DIRECTORY_KEY) ?? "", "browser");
+  },
+
+  async setOutputDirectory(path: string) {
+    const trimmed = path.trim();
+    localStorage.setItem(OUTPUT_DIRECTORY_KEY, trimmed);
+    return normalizeOutputDirectory(trimmed, "browser");
+  },
+
+  async chooseOutputDirectory() {
+    return {
+      ...(await this.getOutputDirectory()),
+      message: "브라우저 데모에서는 폴더 선택 창을 열 수 없습니다. 경로를 직접 입력해 주세요."
+    } satisfies OutputDirectorySettings;
   }
 };
 
@@ -364,5 +421,20 @@ export const voiceApi = {
   exportMP3: (request: SynthesisRequest) =>
     callWails("ExportMP3", () => fallbackApi.exportMP3(request), request),
 
-  getEngineStatus: () => callWails("GetEngineStatus", fallbackApi.getEngineStatus)
+  getEngineStatus: () => callWails("GetEngineStatus", fallbackApi.getEngineStatus),
+
+  getOutputDirectory: () =>
+    callWails("GetOutputDirectory", fallbackApi.getOutputDirectory).then((value) =>
+      normalizeOutputDirectory(value)
+    ),
+
+  setOutputDirectory: (path: string) =>
+    callWails("SetOutputDirectory", () => fallbackApi.setOutputDirectory(path), path).then((value) =>
+      normalizeOutputDirectory(value)
+    ),
+
+  chooseOutputDirectory: () =>
+    callWails("ChooseOutputDirectory", fallbackApi.chooseOutputDirectory).then((value) =>
+      normalizeOutputDirectory(value)
+    )
 };

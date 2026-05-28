@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"guvoice/internal/catalog"
 	"guvoice/internal/ids"
 	"guvoice/internal/model"
@@ -104,6 +106,14 @@ type UIEngineStatus struct {
 	Message string `json:"message"`
 }
 
+type UIOutputDirectorySettings struct {
+	Path        string `json:"path"`
+	DefaultPath string `json:"defaultPath"`
+	IsDefault   bool   `json:"isDefault"`
+	Source      string `json:"source"`
+	Message     string `json:"message"`
+}
+
 func (a *App) GetEngineStatus() (UIEngineStatus, error) {
 	store, err := a.ensureStore()
 	if err != nil {
@@ -115,6 +125,74 @@ func (a *App) GetEngineStatus() (UIEngineStatus, error) {
 		Ready:   true,
 		Message: "데이터는 " + store.BaseDir() + " 아래에 저장됩니다.",
 	}, nil
+}
+
+func (a *App) GetExportSettings() (model.AppSettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.AppSettings{}, err
+	}
+	return store.SettingsSnapshot(), nil
+}
+
+func (a *App) UpdateExportSettings(settings model.AppSettings) (model.AppSettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return model.AppSettings{}, err
+	}
+	return store.UpdateSettings(settings)
+}
+
+func (a *App) GetOutputDirectory() (UIOutputDirectorySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	return outputDirectorySettings(store, "MP3 output directory loaded."), nil
+}
+
+func (a *App) SetOutputDirectory(path string) (UIOutputDirectorySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	settings, err := store.UpdateSettings(model.AppSettings{MP3ExportDirectory: path})
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	if strings.TrimSpace(settings.MP3ExportDirectory) == "" {
+		return outputDirectorySettings(store, "MP3 output directory reset to the default app data exports folder."), nil
+	}
+	return outputDirectorySettings(store, "MP3 output directory updated."), nil
+}
+
+func (a *App) ChooseOutputDirectory() (UIOutputDirectorySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	if a.ctx == nil {
+		return UIOutputDirectorySettings{}, errors.New("cannot open output directory chooser before Wails startup context is available")
+	}
+	selectedPath, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:                "Choose MP3 output folder",
+		DefaultDirectory:     outputDirectoryDialogPath(store),
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	if strings.TrimSpace(selectedPath) == "" {
+		return outputDirectorySettings(store, "Folder selection cancelled; existing MP3 output directory was kept."), nil
+	}
+	settings, err := store.UpdateSettings(model.AppSettings{MP3ExportDirectory: selectedPath})
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	if strings.TrimSpace(settings.MP3ExportDirectory) == "" {
+		return outputDirectorySettings(store, "MP3 output directory reset to the default app data exports folder."), nil
+	}
+	return outputDirectorySettings(store, "MP3 output directory updated."), nil
 }
 
 func (a *App) ListSources() ([]UIVoiceSource, error) {
@@ -254,7 +332,7 @@ func (a *App) AnalyzeText(sourceID string, text string) (UIAnalysisResult, error
 	if err != nil {
 		return UIAnalysisResult{}, err
 	}
-	samples := store.ListSamples(sourceID)
+	samples := usableSamplesOnDisk(store, store.ListSamples(sourceID))
 	return analyzeSourceCoverage(source, samples, text), nil
 }
 
@@ -330,7 +408,7 @@ func (a *App) ExportMP3(req UISynthesisRequest) (UIExportResult, error) {
 	if err != nil {
 		return UIExportResult{}, err
 	}
-	path := filepath.Join(store.BaseDir(), filepath.FromSlash(result.AudioPath))
+	path := storedAudioPath(store, result.AudioPath)
 	return UIExportResult{
 		Status:  "saved",
 		Message: "MP3 파일로 저장했습니다.",
@@ -343,11 +421,49 @@ func (a *App) audioDataURL(relPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(filepath.Join(store.BaseDir(), filepath.FromSlash(relPath)))
+	data, err := os.ReadFile(storedAudioPath(store, relPath))
 	if err != nil {
 		return "", err
 	}
 	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+func storedAudioPath(store *storage.Store, audioPath string) string {
+	if filepath.IsAbs(audioPath) {
+		return audioPath
+	}
+	return filepath.Join(store.BaseDir(), filepath.FromSlash(audioPath))
+}
+
+func outputDirectorySettings(store *storage.Store, message string) UIOutputDirectorySettings {
+	settings := store.SettingsSnapshot()
+	isDefault := store.IsDefaultMP3ExportDir(settings.MP3ExportDirectory)
+	path := strings.TrimSpace(settings.MP3ExportDirectory)
+	if isDefault {
+		path = ""
+	}
+	if message == "" {
+		if isDefault {
+			message = "Using the default app data exports folder."
+		} else {
+			message = "Using a custom MP3 output directory."
+		}
+	}
+	return UIOutputDirectorySettings{
+		Path:        path,
+		DefaultPath: store.ExportsDir(),
+		IsDefault:   isDefault,
+		Source:      "wails",
+		Message:     message,
+	}
+}
+
+func outputDirectoryDialogPath(store *storage.Store) string {
+	settings := outputDirectorySettings(store, "")
+	if strings.TrimSpace(settings.Path) != "" {
+		return settings.Path
+	}
+	return settings.DefaultPath
 }
 
 func sourceToUI(source model.VoiceSource, samples []model.Sample) UIVoiceSource {

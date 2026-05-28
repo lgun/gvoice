@@ -38,7 +38,6 @@ func TestSynthesizeToFileUsesRecordedWAVSamples(t *testing.T) {
 			t.Fatalf("save sample %s: %v", prompt.ID, err)
 		}
 	}
-
 	app := &App{store: store}
 	result, err := app.synthesizeToFile(model.SynthesisRequest{
 		SourceID:   source.ID,
@@ -101,8 +100,16 @@ func TestExportMP3WritesMP3File(t *testing.T) {
 			t.Fatalf("save sample %s: %v", prompt.ID, err)
 		}
 	}
-
+	exportDir := filepath.Join(t.TempDir(), "chosen-mp3-dir")
 	app := &App{store: store}
+	settings, err := app.SetOutputDirectory(exportDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Path != exportDir || settings.IsDefault {
+		t.Fatalf("expected custom output directory settings, got %#v", settings)
+	}
+
 	result, err := app.ExportMP3(UISynthesisRequest{
 		SourceID: source.ID,
 		Text:     "媛",
@@ -122,12 +129,97 @@ func TestExportMP3WritesMP3File(t *testing.T) {
 	if filepath.Ext(result.Path) != ".mp3" {
 		t.Fatalf("expected .mp3 export path, got %s", result.Path)
 	}
+	if filepath.Dir(result.Path) != exportDir {
+		t.Fatalf("expected MP3 in configured directory %s, got %s", exportDir, result.Path)
+	}
 	data, err := os.ReadFile(result.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !hasMP3FrameHeader(data) {
 		t.Fatalf("expected MP3 frame header, got first bytes % x", data[:min(len(data), 8)])
+	}
+}
+
+func TestOutputDirectorySettingsGetSetAndReset(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{store: store}
+
+	defaultSettings, err := app.GetOutputDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaultSettings.IsDefault {
+		t.Fatalf("expected default output directory, got %#v", defaultSettings)
+	}
+	if defaultSettings.Path != "" || defaultSettings.DefaultPath != store.ExportsDir() {
+		t.Fatalf("expected blank custom path and default path %s, got %#v", store.ExportsDir(), defaultSettings)
+	}
+	if defaultSettings.Source != "wails" || strings.TrimSpace(defaultSettings.Message) == "" {
+		t.Fatalf("expected Wails source and message, got %#v", defaultSettings)
+	}
+
+	customDir := filepath.Join(t.TempDir(), "custom-output")
+	customSettings, err := app.SetOutputDirectory(customDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if customSettings.IsDefault || customSettings.Path != customDir {
+		t.Fatalf("expected custom output directory %s, got %#v", customDir, customSettings)
+	}
+
+	resetSettings, err := app.SetOutputDirectory("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resetSettings.IsDefault || resetSettings.Path != "" || resetSettings.DefaultPath != store.ExportsDir() {
+		t.Fatalf("expected reset to default path %s, got %#v", store.ExportsDir(), resetSettings)
+	}
+
+	defaultPathSettings, err := app.SetOutputDirectory(store.ExportsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaultPathSettings.IsDefault || defaultPathSettings.Path != "" {
+		t.Fatalf("expected explicit default path to stay default, got %#v", defaultPathSettings)
+	}
+}
+
+func TestAnalyzeTextTreatsSilentLegacyWAVAsMissing(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.CreateVoiceSource(model.CreateVoiceSourceRequest{
+		Name:          "legacy silent voice",
+		TargetSamples: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.SaveSample(model.SaveSampleRequest{
+		SourceID:       source.ID,
+		PromptID:       "vowel-a",
+		FileName:       "vowel-a.wav",
+		MimeType:       "audio/wav",
+		DataBase64:     silentWAVDataURL(t),
+		Transcript:     "silent legacy sample",
+		DurationMillis: 120,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{store: store}
+	report, err := app.AnalyzeText(source.ID, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Coverage != 0 || !containsMissingPrompt(report, "vowel-a") {
+		t.Fatalf("expected silent WAV to be reported missing, got %#v", report)
 	}
 }
 
@@ -250,6 +342,20 @@ func testWAVDataURL(t *testing.T, frequency int) string {
 		pcm[i] = int16(value * 12000)
 	}
 	if err := synth.WriteWAV(path, sampleRate, pcm); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+func silentWAVDataURL(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "silent.wav")
+	pcm := make([]int16, 800)
+	if err := synth.WriteWAV(path, 8000, pcm); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
