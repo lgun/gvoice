@@ -2,6 +2,7 @@ import {
   AnalysisResult,
   EngineStatus,
   ExportResult,
+  MAX_SAMPLE_TARGET,
   MIN_SAMPLE_TARGET,
   MissingSample,
   PreviewResult,
@@ -65,6 +66,9 @@ const wailsApp = () => window.go?.main?.App;
 
 const hasWails = () => Boolean(wailsApp());
 
+const clampTargetSamples = (value?: number) =>
+  Math.min(MAX_SAMPLE_TARGET, Math.max(MIN_SAMPLE_TARGET, value || MIN_SAMPLE_TARGET));
+
 const seedSources = (): VoiceSource[] => {
   const createdAt = nowIso();
   return [
@@ -115,7 +119,7 @@ const normalizeSource = (source: VoiceSource): VoiceSource => ({
   speaker: source.speaker || "이름 없음",
   note: source.note || "",
   samples: Array.isArray(source.samples) ? source.samples : [],
-  targetSamples: source.targetSamples || MIN_SAMPLE_TARGET
+  targetSamples: clampTargetSamples(source.targetSamples)
 });
 
 const extractTokens = (text: string) => {
@@ -133,7 +137,7 @@ const extractTokens = (text: string) => {
 
 const analyzeFromSamples = (source: VoiceSource, text: string): AnalysisResult => {
   const requiredTokens = extractTokens(text);
-  const target = Math.max(source.targetSamples || MIN_SAMPLE_TARGET, 1);
+  const target = clampTargetSamples(source.targetSamples);
   const requiredPrompts = SAMPLE_PROMPTS.slice(0, target);
   const filledPromptIds = new Set(source.samples.map((sample) => sample.promptId ?? sample.label));
   const missingPrompts = requiredPrompts.filter((prompt) => !filledPromptIds.has(prompt.id));
@@ -228,7 +232,7 @@ const fallbackApi = {
       name: input.name?.trim() || "새 목소리",
       speaker: input.speaker?.trim() || "이름 없음",
       note: input.note?.trim() || "",
-      targetSamples: input.targetSamples || MIN_SAMPLE_TARGET,
+      targetSamples: clampTargetSamples(input.targetSamples),
       samples: [],
       createdAt,
       updatedAt: createdAt
@@ -301,20 +305,13 @@ const fallbackApi = {
   },
 
   async exportMP3(request: SynthesisRequest): Promise<ExportResult> {
-    const blob = new Blob(
-      [
-        "guvoice browser fallback\n",
-        `source=${request.sourceId}\n`,
-        `speed=${request.options.speed}\n`,
-        `pitch=${request.options.pitch}\n`,
-        request.text
-      ],
-      { type: "audio/mpeg" }
-    );
+    const audioUrl = createDemoWav(request.text);
+    const response = await fetch(audioUrl);
+    const blob = await response.blob();
 
     return {
       status: "ready",
-      message: "브라우저 데모 MP3 다운로드를 준비했습니다.",
+      message: "브라우저 데모 WAV 다운로드를 준비했습니다.",
       downloadUrl: URL.createObjectURL(blob)
     } satisfies ExportResult;
   },

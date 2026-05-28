@@ -3,6 +3,7 @@ import { voiceApi } from "./lib/adapter";
 import {
   AnalysisResult,
   EngineStatus,
+  MAX_SAMPLE_TARGET,
   MIN_SAMPLE_TARGET,
   PreviewResult,
   SAMPLE_PROMPTS,
@@ -22,6 +23,9 @@ const initialOptions: SynthesisOptions = {
 
 const defaultSpeakText = "안녕하세요. 오늘은 구보이스 목소리 소스를 테스트합니다.";
 
+const clampTargetSamples = (value?: number) =>
+  Math.min(MAX_SAMPLE_TARGET, Math.max(MIN_SAMPLE_TARGET, value || MIN_SAMPLE_TARGET));
+
 const formatDate = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -36,7 +40,7 @@ const formatDate = (value: string) => {
 };
 
 const requiredPromptsFor = (source?: VoiceSource) =>
-  SAMPLE_PROMPTS.slice(0, source?.targetSamples ?? MIN_SAMPLE_TARGET);
+  SAMPLE_PROMPTS.slice(0, clampTargetSamples(source?.targetSamples));
 
 const filledPromptIdsOf = (source?: VoiceSource) =>
   new Set(source?.samples.map((sample) => sample.promptId ?? sample.label) ?? []);
@@ -48,7 +52,7 @@ const filledCountOf = (source?: VoiceSource) => {
 };
 
 const progressOf = (source: VoiceSource) =>
-  Math.min(100, Math.round((filledCountOf(source) / source.targetSamples) * 100));
+  Math.min(100, Math.round((filledCountOf(source) / clampTargetSamples(source.targetSamples)) * 100));
 
 const blobToDataUrl = (blob: Blob) =>
   new Promise<string>((resolve, reject) => {
@@ -58,12 +62,77 @@ const blobToDataUrl = (blob: Blob) =>
     reader.readAsDataURL(blob);
   });
 
-const pickRecorderMimeType = () => {
-  if (typeof MediaRecorder === "undefined") {
-    return "";
+type WindowWithWebkitAudio = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
+const getAudioContextConstructor = () =>
+  window.AudioContext ?? (window as WindowWithWebkitAudio).webkitAudioContext;
+
+const mergePcmChunks = (chunks: Float32Array[]) => {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
   }
-  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/wav"];
-  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+  return merged;
+};
+
+const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+};
+
+const encodeMono16Wav = (samples: Float32Array, sampleRate: number) => {
+  const dataSize = samples.length * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeString = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i += 1) {
+      view.setUint8(offset + i, value.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (const sample of samples) {
+    const clipped = Math.max(-1, Math.min(1, sample));
+    view.setInt16(offset, clipped < 0 ? clipped * 0x8000 : clipped * 0x7fff, true);
+    offset += 2;
+  }
+
+  return buffer;
+};
+
+const wavDataUrlFromPcm = (chunks: Float32Array[], sampleRate: number) => {
+  const samples = mergePcmChunks(chunks);
+  const buffer = encodeMono16Wav(samples, sampleRate);
+  return {
+    dataUrl: `data:audio/wav;base64,${arrayBufferToBase64(buffer)}`,
+    previewUrl: URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }))
+  };
 };
 
 function ProgressBar({ value }: { value: number }) {
@@ -119,7 +188,7 @@ function SourceList({
               >
                 <span className="source-title">{source.name}</span>
                 <span className="source-meta">
-                  {source.speaker} · 필수 {filledCountOf(source)}/{source.targetSamples}
+                  {source.speaker} · 필수 {filledCountOf(source)}/{clampTargetSamples(source.targetSamples)}
                 </span>
                 <ProgressBar value={progress} />
               </button>
@@ -192,7 +261,7 @@ function SpeakTab({
   onGoRecord: () => void;
 }) {
   const sampleCount = filledCountOf(selectedSource);
-  const targetCount = selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET;
+  const targetCount = clampTargetSamples(selectedSource?.targetSamples);
   const hasBlockingMissing = Boolean(analysis?.missing.some((item) => item.severity === "missing"));
   const sourceComplete = Boolean(selectedSource && sampleCount >= targetCount);
   const canPreview = Boolean(selectedSource && text.trim() && sourceComplete && !hasBlockingMissing);
@@ -293,7 +362,7 @@ function SpeakTab({
           {isSynthesizing ? "생성 중" : "미리듣기"}
         </button>
         <button type="button" onClick={onExport} disabled={!canExport || isExporting}>
-          {isExporting ? "저장 중" : "MP3 저장"}
+          {isExporting ? "저장 중" : "WAV 저장"}
         </button>
         <span className="button-state">{preview?.message ?? previewHint}</span>
       </div>
@@ -365,13 +434,20 @@ function RecordTab({
   const [recorderError, setRecorderError] = useState("");
   const [recorderNotice, setRecorderNotice] = useState("앱 안에서 마이크 권한을 요청하고 바로 녹음합니다.");
   const [lastPreviewUrl, setLastPreviewUrl] = useState("");
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const monitorGainRef = useRef<GainNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const pcmChunksRef = useRef<Float32Array[]>([]);
+  const recordingSourceRef = useRef<VoiceSource | null>(null);
+  const recordingPromptRef = useRef<SamplePrompt | null>(null);
+  const recordingLabelRef = useRef("");
+  const recordingTranscriptRef = useRef("");
   const startedAtRef = useRef(0);
 
   const selectedPrompt = SAMPLE_PROMPTS.find((prompt) => prompt.id === selectedPromptId) ?? SAMPLE_PROMPTS[0];
-  const recordingSupported = Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== "undefined";
+  const recordingSupported = Boolean(navigator.mediaDevices?.getUserMedia) && Boolean(getAudioContextConstructor());
 
   useEffect(() => {
     if (!isRecording) {
@@ -399,6 +475,22 @@ function RecordTab({
     return onEnsureSource();
   };
 
+  const cleanupRecording = () => {
+    processorRef.current?.disconnect();
+    if (processorRef.current) {
+      processorRef.current.onaudioprocess = null;
+    }
+    sourceNodeRef.current?.disconnect();
+    monitorGainRef.current?.disconnect();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    void audioContextRef.current?.close();
+    processorRef.current = null;
+    sourceNodeRef.current = null;
+    monitorGainRef.current = null;
+    streamRef.current = null;
+    audioContextRef.current = null;
+  };
+
   const startRecording = async () => {
     setRecorderError("");
     setRecorderNotice("");
@@ -422,74 +514,101 @@ function RecordTab({
           autoGainControl: false
         }
       });
-      const mimeType = pickRecorderMimeType();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const AudioContextConstructor = getAudioContextConstructor();
+      if (!AudioContextConstructor) {
+        throw new Error("Web Audio API를 사용할 수 없습니다.");
+      }
+      const audioContext = new AudioContextConstructor();
+      const sourceNode = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, Math.max(1, sourceNode.channelCount || 1), 1);
+      const monitorGain = audioContext.createGain();
+      monitorGain.gain.value = 0;
+
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer;
+        const frameCount = input.length;
+        const channelCount = input.numberOfChannels;
+        const mono = new Float32Array(frameCount);
+        for (let channel = 0; channel < channelCount; channel += 1) {
+          const data = input.getChannelData(channel);
+          for (let index = 0; index < frameCount; index += 1) {
+            mono[index] += data[index] / channelCount;
+          }
+        }
+        pcmChunksRef.current.push(mono);
+      };
+
+      sourceNode.connect(processor);
+      processor.connect(monitorGain);
+      monitorGain.connect(audioContext.destination);
 
       streamRef.current = stream;
-      recorderRef.current = recorder;
-      chunksRef.current = [];
+      audioContextRef.current = audioContext;
+      sourceNodeRef.current = sourceNode;
+      processorRef.current = processor;
+      monitorGainRef.current = monitorGain;
+      pcmChunksRef.current = [];
+      recordingSourceRef.current = source;
+      recordingPromptRef.current = selectedPrompt;
+      recordingLabelRef.current = label.trim() || selectedPrompt.label;
+      recordingTranscriptRef.current = transcript.trim() || selectedPrompt.text;
       startedAtRef.current = Date.now();
       setElapsed(0);
       setLastPreviewUrl("");
 
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
-        }
-      };
-
-      recorder.onerror = () => {
-        setRecorderError("녹음 중 오류가 발생했습니다.");
-      };
-
-      recorder.onstop = async () => {
-        const chunks = chunksRef.current;
-        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-        stream.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-        recorderRef.current = null;
-        chunksRef.current = [];
-        setIsRecording(false);
-
-        if (blob.size === 0) {
-          setRecorderError("녹음 데이터가 비어 있습니다. 마이크 입력을 확인하세요.");
-          return;
-        }
-
-        const duration = Math.max(0.2, (Date.now() - startedAtRef.current) / 1000);
-        const audioUrl = URL.createObjectURL(blob);
-        setLastPreviewUrl(audioUrl);
-
-        await onAddSample(source.id, {
-          promptId: selectedPrompt.id,
-          label: label.trim() || selectedPrompt.label,
-          text: transcript.trim() || selectedPrompt.text,
-          duration,
-          origin: "recording",
-          audioName: `recording-${selectedPrompt.id}.webm`,
-          audioUrl,
-          dataBase64: await blobToDataUrl(blob)
-        });
-        setRecorderNotice("녹음 샘플을 저장했습니다. 방금 녹음한 소리는 아래에서 확인할 수 있습니다.");
-      };
-
-      recorder.start(250);
       setIsRecording(true);
-      setRecorderNotice("녹음 중입니다. 문장을 읽은 뒤 정지를 누르세요.");
+      setRecorderNotice("녹음 중입니다. 제시된 샘플을 읽은 뒤 정지를 누르세요.");
     } catch (error) {
       setRecorderError(error instanceof Error ? error.message : "마이크 권한을 확인하세요.");
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+      cleanupRecording();
       setIsRecording(false);
     } finally {
       setIsPreparing(false);
     }
   };
 
-  const stopRecording = () => {
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") {
-      recorder.stop();
+  const stopRecording = async () => {
+    if (!isRecording) {
+      return;
+    }
+
+    const source = recordingSourceRef.current;
+    const prompt = recordingPromptRef.current ?? selectedPrompt;
+    const chunks = pcmChunksRef.current;
+    const sampleRate = audioContextRef.current?.sampleRate ?? 44100;
+    const duration = Math.max(0.2, (Date.now() - startedAtRef.current) / 1000);
+    cleanupRecording();
+    pcmChunksRef.current = [];
+    recordingSourceRef.current = null;
+    recordingPromptRef.current = null;
+    setIsRecording(false);
+
+    if (!source) {
+      setRecorderError("목소리 소스를 찾지 못했습니다.");
+      return;
+    }
+    if (!chunks.length) {
+      setRecorderError("녹음 데이터가 비어 있습니다. 마이크 입력을 확인하세요.");
+      return;
+    }
+
+    try {
+      const { dataUrl, previewUrl } = wavDataUrlFromPcm(chunks, sampleRate);
+      setLastPreviewUrl(previewUrl);
+
+      await onAddSample(source.id, {
+        promptId: prompt.id,
+        label: recordingLabelRef.current || prompt.label,
+        text: recordingTranscriptRef.current || prompt.text,
+        duration,
+        origin: "recording",
+        audioName: `recording-${prompt.id}.wav`,
+        audioUrl: previewUrl,
+        dataBase64: dataUrl
+      });
+      setRecorderNotice("WAV 녹음 샘플을 저장했습니다. 방금 녹음한 소리는 아래에서 확인할 수 있습니다.");
+    } catch (error) {
+      setRecorderError(error instanceof Error ? error.message : "녹음 WAV를 저장하지 못했습니다.");
     }
   };
 
@@ -503,17 +622,28 @@ function RecordTab({
       setRecorderError("목소리 소스를 만들지 못했습니다.");
       return;
     }
-    for (const file of files) {
-      await onAddSample(source.id, {
-        promptId: selectedPrompt.id,
-        label: label.trim() || selectedPrompt.label || file.name,
-        text: transcript.trim() || selectedPrompt.text || file.name,
-        duration: 0,
-        origin: "upload",
-        audioName: file.name,
-        audioUrl: URL.createObjectURL(file),
-        dataBase64: await blobToDataUrl(file)
-      });
+    setRecorderError("");
+    try {
+      for (const file of files) {
+        const isWav = file.type === "audio/wav" || file.type === "audio/wave" || file.name.toLowerCase().endsWith(".wav");
+        if (!isWav) {
+          throw new Error("업로드 합성은 WAV/PCM 파일만 지원합니다. 녹음 파일을 WAV로 변환해서 다시 올려 주세요.");
+        }
+        await onAddSample(source.id, {
+          promptId: selectedPrompt.id,
+          label: label.trim() || selectedPrompt.label || file.name,
+          text: transcript.trim() || selectedPrompt.text || file.name,
+          duration: 0,
+          origin: "upload",
+          audioName: file.name,
+          audioUrl: URL.createObjectURL(file),
+          dataBase64: await blobToDataUrl(file)
+        });
+      }
+    } catch (error) {
+      setRecorderError(error instanceof Error ? error.message : "WAV 파일을 업로드하지 못했습니다.");
+      event.target.value = "";
+      return;
     }
     setRecorderNotice(`${files.length}개 파일을 현재 샘플 항목에 등록했습니다.`);
     event.target.value = "";
@@ -531,7 +661,7 @@ function RecordTab({
             <h2>{selectedSource?.name ?? "새 소스가 자동으로 만들어집니다"}</h2>
           </div>
           <span className="pill">
-            필수 {filledCountOf(selectedSource)}/{selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET}
+            필수 {filledCountOf(selectedSource)}/{clampTargetSamples(selectedSource?.targetSamples)}
           </span>
         </div>
 
@@ -583,7 +713,7 @@ function RecordTab({
             </div>
             <label className="file-button">
               파일 업로드
-              <input type="file" accept="audio/*" multiple onChange={handleUpload} />
+              <input type="file" accept=".wav,audio/wav,audio/wave,audio/x-wav" multiple onChange={handleUpload} />
             </label>
           </div>
           <div className="prompt-grid">
@@ -658,7 +788,7 @@ function ManageTab({
     setEditName(selectedSource?.name ?? "");
     setEditSpeaker(selectedSource?.speaker ?? "");
     setEditNote(selectedSource?.note ?? "");
-    setEditTarget(selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET);
+    setEditTarget(clampTargetSamples(selectedSource?.targetSamples));
   }, [selectedSource]);
 
   const submitCreate = async (event: FormEvent) => {
@@ -667,7 +797,7 @@ function ManageTab({
       name: newName,
       speaker: newSpeaker,
       note: newNote,
-      targetSamples: newTarget
+      targetSamples: clampTargetSamples(newTarget)
     });
     setNewName("");
     setNewSpeaker("");
@@ -681,7 +811,7 @@ function ManageTab({
       name: editName,
       speaker: editSpeaker,
       note: editNote,
-      targetSamples: editTarget
+      targetSamples: clampTargetSamples(editTarget)
     });
   };
 
@@ -713,10 +843,10 @@ function ManageTab({
           <FieldLabel>목표 샘플 수</FieldLabel>
           <input
             type="number"
-            min={3}
-            max={80}
+            min={MIN_SAMPLE_TARGET}
+            max={MAX_SAMPLE_TARGET}
             value={newTarget}
-            onChange={(event) => setNewTarget(Number(event.target.value))}
+            onChange={(event) => setNewTarget(clampTargetSamples(Number(event.target.value)))}
           />
         </label>
       </form>
@@ -747,10 +877,10 @@ function ManageTab({
           <FieldLabel>목표 샘플 수</FieldLabel>
           <input
             type="number"
-            min={3}
-            max={80}
+            min={MIN_SAMPLE_TARGET}
+            max={MAX_SAMPLE_TARGET}
             value={editTarget}
-            onChange={(event) => setEditTarget(Number(event.target.value))}
+            onChange={(event) => setEditTarget(clampTargetSamples(Number(event.target.value)))}
             disabled={!selectedSource}
           />
         </label>
@@ -774,7 +904,7 @@ function StatusPanel({
   preview: PreviewResult | null;
 }) {
   const progress = selectedSource ? progressOf(selectedSource) : 0;
-  const sourceComplete = Boolean(selectedSource && filledCountOf(selectedSource) >= selectedSource.targetSamples);
+  const sourceComplete = Boolean(selectedSource && filledCountOf(selectedSource) >= clampTargetSamples(selectedSource.targetSamples));
   const coveredPromptLabels = new Set(selectedSource?.samples.map((sample) => sample.label));
   const coveredPromptIds = new Set(selectedSource?.samples.map((sample) => sample.promptId ?? sample.label));
   const nextPrompts = SAMPLE_PROMPTS.filter(
@@ -803,7 +933,7 @@ function StatusPanel({
           <div>
             <dt>샘플</dt>
             <dd>
-              {filledCountOf(selectedSource)}/{selectedSource?.targetSamples ?? MIN_SAMPLE_TARGET}
+              {filledCountOf(selectedSource)}/{clampTargetSamples(selectedSource?.targetSamples)}
             </dd>
           </div>
           <div>
@@ -822,7 +952,7 @@ function StatusPanel({
             <dd>{sourceComplete ? "가능" : "대기"}</dd>
           </div>
           <div>
-            <dt>MP3 저장</dt>
+            <dt>WAV 저장</dt>
             <dd>{preview?.status === "ready" ? "가능" : "대기"}</dd>
           </div>
         </dl>
@@ -926,7 +1056,7 @@ export default function App() {
       name: input.name.trim() || "새 목소리",
       speaker: input.speaker.trim() || "나",
       note: input.note.trim(),
-      targetSamples: input.targetSamples || MIN_SAMPLE_TARGET
+      targetSamples: clampTargetSamples(input.targetSamples)
     });
     await refreshSources(created.id);
     setActiveTab("record");
@@ -1012,7 +1142,7 @@ export default function App() {
       if (result.downloadUrl) {
         const anchor = document.createElement("a");
         anchor.href = result.downloadUrl;
-        anchor.download = `${selectedSource.name.replace(/\s+/g, "-")}-guvoice.mp3`;
+        anchor.download = `${selectedSource.name.replace(/\s+/g, "-")}-guvoice.wav`;
         anchor.click();
       }
       setNotice(result.path ? `${result.message}: ${result.path}` : result.message);

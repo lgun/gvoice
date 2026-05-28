@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,6 +58,7 @@ type UIUpdateSourcePatch struct {
 
 type UIMissingSample struct {
 	Token    string `json:"token"`
+	PromptID string `json:"promptId,omitempty"`
 	Reason   string `json:"reason"`
 	Severity string `json:"severity"`
 }
@@ -213,8 +215,7 @@ func (a *App) AddSample(sourceID string, input UIVoiceSample) (UIVoiceSource, er
 	}
 	data := strings.TrimSpace(input.DataBase64)
 	if data == "" {
-		payload := base64.StdEncoding.EncodeToString([]byte(input.Text))
-		data = "data:text/plain;base64," + payload
+		return UIVoiceSource{}, errors.New("WAV audio data is required")
 	}
 	promptID := strings.TrimSpace(input.PromptID)
 	if promptID == "" {
@@ -222,7 +223,10 @@ func (a *App) AddSample(sourceID string, input UIVoiceSample) (UIVoiceSource, er
 	}
 	fileName := strings.TrimSpace(input.AudioName)
 	if fileName == "" {
-		fileName = promptID + ".webm"
+		fileName = promptID + ".wav"
+	}
+	if err := validateWAVSampleBlob(fileName, data, ""); err != nil {
+		return UIVoiceSource{}, err
 	}
 	if _, err := store.SaveSample(model.SaveSampleRequest{
 		SourceID:       sourceID,
@@ -274,7 +278,11 @@ func (a *App) Synthesize(req UISynthesisRequest) (UIPreviewResult, error) {
 		Speed:      req.Options.Speed,
 	})
 	if err != nil {
-		return UIPreviewResult{}, err
+		return UIPreviewResult{
+			ID:      ids.New("preview"),
+			Status:  "error",
+			Message: err.Error(),
+		}, nil
 	}
 	audioURL, err := a.audioDataURL(result.AudioPath)
 	if err != nil {
@@ -307,7 +315,10 @@ func (a *App) ExportMP3(req UISynthesisRequest) (UIExportResult, error) {
 		Speed:      req.Options.Speed,
 	})
 	if err != nil {
-		return UIExportResult{}, err
+		return UIExportResult{
+			Status:  "error",
+			Message: err.Error(),
+		}, nil
 	}
 	store, err := a.ensureStore()
 	if err != nil {
@@ -316,7 +327,7 @@ func (a *App) ExportMP3(req UISynthesisRequest) (UIExportResult, error) {
 	path := filepath.Join(store.BaseDir(), filepath.FromSlash(result.AudioPath))
 	return UIExportResult{
 		Status:  "saved",
-		Message: "MP3 인코더가 없어 현재는 WAV로 저장했습니다.",
+		Message: "WAV 파일로 저장했습니다.",
 		Path:    path,
 	}, nil
 }
@@ -364,16 +375,17 @@ func sourceToUI(source model.VoiceSource, samples []model.Sample) UIVoiceSource 
 }
 
 func analyzeSourceCoverage(source model.VoiceSource, samples []model.Sample, text string) UIAnalysisResult {
-	target := normalizeTarget(source.TargetSamples)
-	filledIDs := map[string]bool{}
-	for _, sample := range samples {
-		if sample.PromptID != "" {
-			filledIDs[sample.PromptID] = true
+	requiredPrompts := requiredPromptDefinitions(source.TargetSamples)
+	target := len(requiredPrompts)
+	filledIDs := filledUsablePromptIDs(samples)
+	matched := 0
+	missingPrompts := []promptDefinition{}
+	for _, prompt := range requiredPrompts {
+		if filledIDs[prompt.ID] {
+			matched++
+		} else {
+			missingPrompts = append(missingPrompts, prompt)
 		}
-	}
-	matched := len(filledIDs)
-	if matched > target {
-		matched = target
 	}
 	coverage := 0
 	if target > 0 {
@@ -387,12 +399,37 @@ func analyzeSourceCoverage(source model.VoiceSource, samples []model.Sample, tex
 			Severity: "warn",
 		})
 	}
-	if matched < target {
+	reportedMissing := map[string]bool{}
+	for _, prompt := range missingPrompts[:min(len(missingPrompts), 10)] {
+		reportedMissing[prompt.ID] = true
 		missing = append(missing, UIMissingSample{
-			Token:    fmt.Sprintf("%d개", target-matched),
-			Reason:   "필수 샘플이 아직 채워지지 않았습니다.",
+			Token:    prompt.Text,
+			PromptID: prompt.ID,
+			Reason:   prompt.Label + " WAV 샘플이 없습니다.",
 			Severity: "missing",
 		})
+	}
+	if len(missingPrompts) > 10 {
+		missing = append(missing, UIMissingSample{
+			Token:    fmt.Sprintf("+%d개", len(missingPrompts)-10),
+			Reason:   "추가 필수 WAV 샘플이 더 필요합니다.",
+			Severity: "missing",
+		})
+	}
+
+	_, usedPromptIDs := sequenceForText(text)
+	for _, promptID := range usedPromptIDs {
+		if filledIDs[promptID] || reportedMissing[promptID] {
+			continue
+		}
+		prompt := promptDefinitionForID(promptID)
+		missing = append(missing, UIMissingSample{
+			Token:    firstNonEmpty(prompt.Text, promptID),
+			PromptID: promptID,
+			Reason:   "입력 텍스트 합성에 필요한 WAV 샘플입니다.",
+			Severity: "missing",
+		})
+		reportedMissing[promptID] = true
 	}
 	return UIAnalysisResult{
 		Coverage: coverage,
@@ -422,8 +459,15 @@ func sampleLabel(sample model.Sample) string {
 }
 
 func normalizeTarget(value int) int {
+	maxTarget := len(guvoicePromptCatalog)
+	if maxTarget <= 0 {
+		maxTarget = defaultTargetSamples
+	}
 	if value <= 0 {
-		return defaultTargetSamples
+		value = defaultTargetSamples
+	}
+	if value > maxTarget {
+		return maxTarget
 	}
 	return value
 }

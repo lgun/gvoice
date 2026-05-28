@@ -36,6 +36,9 @@ The MVP keeps final consonants as a timing/pitch artifact rather than requiring 
 ## Implementation Notes
 
 - Wails/Go owns persistence and export paths.
-- React owns recording UI through `MediaRecorder` and passes audio blobs to Go when Wails bindings exist.
+- React owns recording UI through `getUserMedia` + Web Audio API PCM capture and passes mono 16-bit WAV data URLs to Go when Wails bindings exist.
 - The frontend also has a localStorage fallback so the UI can be demonstrated in a normal browser during development.
 - Internal sample storage should keep original captures and metadata under the user's application data directory.
+- The Go backend decodes saved WAV samples by promptId and renders preview/export WAV files by concatenating the mapped sample sequence.
+- MP3 export remains a follow-up; until an encoder is wired in, export saves the generated WAV and returns that path.
+- WAV upload decoding is limited to RIFF/WAVE 16-bit PCM for the MVP; WAVE_FORMAT_EXTENSIBLE can be added later.

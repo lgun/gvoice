@@ -96,8 +96,8 @@ func DefaultFallbackPolicy() []model.FallbackPolicy {
 		},
 		{
 			Order:       4,
-			Method:      "placeholder",
-			Description: "사용 가능한 샘플이 없으면 합성 골격 검증을 위한 placeholder WAV를 생성합니다.",
+			Method:      "blocked_missing_samples",
+			Description: "필요한 WAV 샘플이 없으면 preview/export를 생성하지 않고 누락 샘플을 안내합니다.",
 		},
 	}
 }

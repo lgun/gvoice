@@ -28,6 +28,7 @@ export interface VoiceSource {
 
 export interface MissingSample {
   token: string;
+  promptId?: string;
   reason: string;
   severity: "missing" | "warn";
 }
@@ -79,9 +80,6 @@ export interface SamplePrompt {
   text: string;
 }
 
-export const MIN_SAMPLE_TARGET = 25;
-export const MIN_PREVIEW_SAMPLES = 3;
-
 export const SAMPLE_PROMPTS: SamplePrompt[] = [
   { id: "vowel-a", label: "모음 아", text: "아" },
   { id: "vowel-eo", label: "모음 어", text: "어" },
@@ -112,3 +110,7 @@ export const SAMPLE_PROMPTS: SamplePrompt[] = [
   { id: "tone-fast", label: "빠른 톤", text: "작은 소리도 또렷하게 읽어 보겠습니다." },
   { id: "tone-question", label: "질문 톤", text: "이 설정으로 미리듣기를 만들어 볼까요?" }
 ];
+
+export const MIN_SAMPLE_TARGET = Math.min(25, SAMPLE_PROMPTS.length);
+export const MAX_SAMPLE_TARGET = SAMPLE_PROMPTS.length;
+export const MIN_PREVIEW_SAMPLES = Math.min(3, SAMPLE_PROMPTS.length);

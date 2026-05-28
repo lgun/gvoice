@@ -71,6 +71,7 @@ func (a *App) createVoiceSource(req model.CreateVoiceSourceRequest) (model.Voice
 	if err != nil {
 		return model.VoiceSource{}, err
 	}
+	req.TargetSamples = normalizeTarget(req.TargetSamples)
 	return store.CreateVoiceSource(req)
 }
 
@@ -113,6 +114,9 @@ func (a *App) saveSample(req model.SaveSampleRequest) (model.Sample, error) {
 	if err != nil {
 		return model.Sample{}, err
 	}
+	if err := validateWAVSampleBlob(req.FileName, req.DataBase64, req.MimeType); err != nil {
+		return model.Sample{}, err
+	}
 	return store.SaveSample(req)
 }
 
@@ -120,6 +124,11 @@ func (a *App) registerUpload(req model.RegisterUploadRequest) (model.Upload, err
 	store, err := a.ensureStore()
 	if err != nil {
 		return model.Upload{}, err
+	}
+	if strings.TrimSpace(req.PromptID) != "" && strings.TrimSpace(req.DataBase64) != "" {
+		if err := validateWAVSampleBlob(req.FileName, req.DataBase64, req.MimeType); err != nil {
+			return model.Upload{}, err
+		}
 	}
 	return store.RegisterUpload(req)
 }
@@ -137,9 +146,13 @@ func (a *App) checkMissingSamples(req model.CheckMissingSamplesRequest) (model.M
 	if err != nil {
 		return model.MissingSampleReport{}, err
 	}
+	source, err := store.GetVoiceSource(sourceID)
+	if err != nil {
+		return model.MissingSampleReport{}, err
+	}
 	analysis := analyzeKoreanText(req.Text)
 	samples := store.ListSamples(sourceID)
-	return buildMissingSampleReport(sourceID, req.Text, analysis, samples), nil
+	return buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, source.TargetSamples), nil
 }
 
 func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResult, error) {
@@ -156,14 +169,22 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 	}
 
 	analysis := analyzeKoreanText(req.Text)
-	missing := buildMissingSampleReport(sourceID, req.Text, analysis, store.ListSamples(sourceID))
+	source, err := store.GetVoiceSource(sourceID)
+	if err != nil {
+		return model.SynthesisResult{}, err
+	}
+	samples := store.ListSamples(sourceID)
+	missingRequired := missingRequiredPromptIDs(source.TargetSamples, samples)
+	if len(missingRequired) > 0 {
+		return model.SynthesisResult{}, fmt.Errorf("필수 WAV 샘플이 부족합니다: %s", strings.Join(missingRequired, ", "))
+	}
 	resultID := ids.New("synth")
 	format := strings.ToLower(strings.TrimSpace(req.Format))
 	if format == "" {
 		format = "wav"
 	}
 	if format != "wav" {
-		return model.SynthesisResult{}, fmt.Errorf("unsupported synthesis format %q; wav is available in the MVP skeleton", format)
+		return model.SynthesisResult{}, fmt.Errorf("unsupported synthesis format %q; wav is available in this MVP", format)
 	}
 
 	baseName := strings.TrimSpace(req.OutputName)
@@ -176,7 +197,27 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 	audioPath := filepath.Join(store.BaseDir(), audioRel)
 	manifestPath := filepath.Join(store.BaseDir(), manifestRel)
 
-	duration, err := synth.WritePlaceholderWAV(audioPath, req.Text, synth.Options{
+	steps, usedPromptIDs := sequenceForText(req.Text)
+	latestSamples := latestUsableSamplesByPrompt(samples)
+	missingUsed := []string{}
+	for index := range steps {
+		if steps[index].PromptID == "" {
+			continue
+		}
+		sample, ok := latestSamples[steps[index].PromptID]
+		if !ok {
+			missingUsed = append(missingUsed, steps[index].PromptID)
+			continue
+		}
+		steps[index].Path = filepath.Join(store.BaseDir(), filepath.FromSlash(sample.Path))
+	}
+	if len(missingUsed) > 0 {
+		return model.SynthesisResult{}, fmt.Errorf("입력 텍스트에 필요한 WAV 샘플이 없습니다: %s", strings.Join(missingUsed, ", "))
+	}
+
+	missing := buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, source.TargetSamples)
+
+	duration, err := synth.WriteSequenceWAV(audioPath, steps, synth.Options{
 		SampleRate: req.SampleRate,
 		Speed:      req.Speed,
 	})
@@ -194,7 +235,7 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		DurationMillis: duration,
 		CreatedAt:      time.Now().UTC(),
 		MissingReport:  missing,
-		Message:        "MVP placeholder WAV generated. High quality concatenative/neural synthesis is intentionally not implemented yet.",
+		Message:        fmt.Sprintf("샘플 기반 WAV를 생성했습니다. 사용한 promptId: %s", strings.Join(usedPromptIDs, ", ")),
 	}
 
 	manifest, err := json.MarshalIndent(result, "", "  ")
@@ -342,6 +383,51 @@ func analyzeKoreanText(text string) model.TextAnalysis {
 	return analysis
 }
 
+func buildPromptMissingSampleReport(sourceID string, text string, analysis model.TextAnalysis, samples []model.Sample, target int) model.MissingSampleReport {
+	filled := filledUsablePromptIDs(samples)
+	latest := latestUsableSamplesByPrompt(samples)
+	missingIDs := map[string]bool{}
+
+	for _, prompt := range requiredPromptDefinitions(target) {
+		if !filled[prompt.ID] {
+			missingIDs[prompt.ID] = true
+		}
+	}
+
+	_, usedPromptIDs := sequenceForText(text)
+	report := model.MissingSampleReport{
+		SourceID:                sourceID,
+		Text:                    text,
+		Analysis:                analysis,
+		FallbackPolicy:          catalog.DefaultFallbackPolicy(),
+		MissingPromptIDs:        []string{},
+		Resolutions:             []model.FallbackResolution{},
+		ReadyForJamoComposition: true,
+	}
+	for _, promptID := range usedPromptIDs {
+		prompt := promptDefinitionForID(promptID)
+		resolution := model.FallbackResolution{
+			Syllable:  prompt.Text,
+			Method:    "prompt_sample",
+			PromptIDs: []string{promptID},
+		}
+		if sample, ok := latest[promptID]; ok {
+			resolution.SampleIDs = []string{sample.ID}
+		} else {
+			resolution.Method = "missing_samples"
+			resolution.MissingPromptIDs = []string{promptID}
+			missingIDs[promptID] = true
+		}
+		report.Resolutions = append(report.Resolutions, resolution)
+	}
+	for promptID := range missingIDs {
+		report.MissingPromptIDs = append(report.MissingPromptIDs, promptID)
+	}
+	sort.Strings(report.MissingPromptIDs)
+	report.ReadyForMVP = strings.TrimSpace(text) != "" && len(report.MissingPromptIDs) == 0
+	return report
+}
+
 func buildMissingSampleReport(sourceID string, text string, analysis model.TextAnalysis, samples []model.Sample) model.MissingSampleReport {
 	latestByPrompt := map[string]model.Sample{}
 	hasAnyUsableSample := false
@@ -409,7 +495,7 @@ func buildMissingSampleReport(sourceID string, text string, analysis model.TextA
 			}
 		}
 
-		method := "placeholder"
+		method := "missing_samples"
 		if len(unavailableJamo) == 0 {
 			method = "jamo_composition"
 		} else if hasAnyUsableSample {

@@ -40,7 +40,7 @@ Current layout:
 Important UX rule:
 
 - If the user cannot preview/export because samples are missing, the UI should make the missing state obvious and steer them to recording.
-- Recording must happen inside guvoice. The Record tab uses browser/WebView2 `getUserMedia` + `MediaRecorder`; if there is no selected source, pressing Record creates one automatically before requesting microphone permission.
+- Recording must happen inside guvoice. The Record tab uses browser/WebView2 `getUserMedia` + Web Audio API PCM capture; if there is no selected source, pressing Record creates one automatically before requesting microphone permission. Saved recordings are mono 16-bit WAV data URLs so Go can decode them directly.
 - Avoid broad page-level inner scrolling on desktop. Keep the main tool surface fitted to the Wails window; only long source/sample/prompt lists should scroll.
 - Do not present grouped phrases such as `아 에 이 오 우...` as one required sample unless automatic segmentation exists. Current MVP records one prompt as one sample, so required prompts should be individual syllables/tokens like `아`, `어`, `가`.
 
@@ -56,12 +56,13 @@ Frontend:
 Backend:
 
 - `main.go`: Wails v2 app entrypoint, embeds `frontend/dist`.
-- `app.go`: backend domain methods and lower-level synthesis skeleton.
+- `app.go`: backend domain methods and sample-based WAV synthesis orchestration.
 - `frontend_api.go`: Wails methods matching the frontend adapter names.
+- `prompts.go`: guvoice minimal prompt catalog, text-to-prompt mapping, and usable WAV sample checks.
 - `internal/storage/store.go`: JSON state, source/sample/upload/export persistence.
 - `internal/hangul/hangul.go`: Hangul decomposition/compose helpers.
 - `internal/catalog/catalog.go`: Korean minimal sample set.
-- `internal/synth/wav.go`: placeholder WAV generator.
+- `internal/synth/wav.go`: WAV reader/writer and concatenative sequence renderer.
 
 Docs:
 
@@ -70,9 +71,11 @@ Docs:
 
 ## Current Limitations
 
-- Actual sample concatenation synthesis is not implemented yet.
-- MP3 export is represented by the UI/API, but backend currently saves a placeholder WAV because no MP3 encoder/ffmpeg is wired in.
+- Sample concatenation synthesis is implemented for WAV samples recorded by the app.
+- Export currently saves the sample-based output as WAV because no MP3 encoder/ffmpeg is wired in.
 - Wails generated `frontend/wailsjs/` and `frontend/package.json.md5` are ignored because the current frontend adapter does not import generated bindings directly.
+- Older samples captured as WebM/Opus by previous builds are not usable for synthesis; re-record them in the current WAV-based recorder.
+- WAV decoding currently accepts RIFF/WAVE 16-bit PCM. WAVE_FORMAT_EXTENSIBLE uploads are not handled yet; app recordings already use supported PCM16 WAV.
 
 ## Verification Already Done
 
@@ -110,9 +113,19 @@ Result: passed. `wails build` produced `build\bin\guvoice.exe`.
 
 `ffmpeg -version` was still unavailable, so real MP3 encoding remains unwired.
 
+Additional verification after sample-based synthesis implementation:
+
+```powershell
+go test ./...
+npm run build
+wails build
+```
+
+Result: passed. The root integration test records all required promptIds into a temp store, generates a sample-based WAV, and reads it back through the WAV decoder.
+
 ## Recommended Next Steps
 
 1. Run `wails dev` with the local Go/Wails PATH above or install Go/Wails globally.
-2. Replace placeholder WAV synthesis with actual sample concatenation.
-3. Add real MP3 export through ffmpeg detection/bundling or a Go encoder.
-4. Improve recording flow with sample-by-sample queue, quality checks, trim, and retry.
+2. Add real MP3 export through ffmpeg detection/bundling or a Go encoder.
+3. Improve recording flow with sample-by-sample queue, quality checks, trim, and retry.
+4. Add better upload validation/conversion for non-WAV files.
