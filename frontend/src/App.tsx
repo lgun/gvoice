@@ -9,6 +9,8 @@ import {
   OutputDirectorySettings,
   PreviewResult,
   SAMPLE_PROMPTS,
+  SentencePrompt,
+  SentenceSampleCandidate,
   SpeechItem,
   SpeechLibrarySettings,
   SamplePrompt,
@@ -68,6 +70,36 @@ const filledCountOf = (source?: VoiceSource) => {
 
 const progressOf = (source: VoiceSource) =>
   Math.min(100, Math.round((filledCountOf(source) / clampTargetSamples(source.targetSamples)) * 100));
+
+type RecordingMode = "single" | "sentence";
+
+const hardBlockingCandidateStatuses = ["reject", "rejected", "failed", "error", "empty", "silence"];
+const autoBlockedCandidateStatuses = [...hardBlockingCandidateStatuses, "review", "warning", "warn"];
+const reviewCandidateStatuses = ["review", "warning", "warn"];
+const usefulCandidateStatuses = ["ready", "usable", "good", "ok", "accepted"];
+const minManualCandidateConfidence = 0.15;
+const minAutoCandidateConfidence = 0.75;
+const minCandidateDuration = 0.08;
+
+const normalizedCandidateStatus = (candidate: SentenceSampleCandidate) =>
+  (candidate.status ?? "").trim().toLowerCase();
+
+const hasCandidateStatus = (candidate: SentenceSampleCandidate, statuses: string[]) => {
+  const status = normalizedCandidateStatus(candidate);
+  return statuses.some((item) => status === item || status.includes(item));
+};
+
+const hasHardBlockingCandidateStatus = (candidate: SentenceSampleCandidate) =>
+  hasCandidateStatus(candidate, hardBlockingCandidateStatuses);
+
+const hasAutoBlockedCandidateStatus = (candidate: SentenceSampleCandidate) =>
+  hasCandidateStatus(candidate, autoBlockedCandidateStatuses);
+
+const hasReviewCandidateStatus = (candidate: SentenceSampleCandidate) =>
+  hasCandidateStatus(candidate, reviewCandidateStatuses);
+
+const hasUsefulCandidateStatus = (candidate: SentenceSampleCandidate) =>
+  hasCandidateStatus(candidate, usefulCandidateStatuses);
 
 type WindowWithWebkitAudio = Window & {
   webkitAudioContext?: typeof AudioContext;
@@ -378,12 +410,22 @@ function RecordTab({
   const [selectedPromptId, setSelectedPromptId] = useState(SAMPLE_PROMPTS[0].id);
   const [label, setLabel] = useState(SAMPLE_PROMPTS[0].label);
   const [transcript, setTranscript] = useState(SAMPLE_PROMPTS[0].text);
+  const [recordMode, setRecordMode] = useState<RecordingMode>("single");
   const [isRecording, setIsRecording] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
+  const [isExtractingSentence, setIsExtractingSentence] = useState(false);
+  const [isSavingSentenceCandidates, setIsSavingSentenceCandidates] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [recorderError, setRecorderError] = useState("");
   const [recorderNotice, setRecorderNotice] = useState("앱 안에서 마이크 권한을 요청하고 바로 녹음합니다.");
   const [lastPreviewUrl, setLastPreviewUrl] = useState("");
+  const [sentencePrompts, setSentencePrompts] = useState<SentencePrompt[]>([]);
+  const [selectedSentencePromptId, setSelectedSentencePromptId] = useState("");
+  const [sentenceText, setSentenceText] = useState("");
+  const [sentenceCandidates, setSentenceCandidates] = useState<SentenceSampleCandidate[]>([]);
+  const [sentenceWarnings, setSentenceWarnings] = useState<string[]>([]);
+  const [sentenceRecordingUrl, setSentenceRecordingUrl] = useState("");
+  const [savedCandidateIds, setSavedCandidateIds] = useState<Set<string>>(() => new Set());
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -392,11 +434,16 @@ function RecordTab({
   const pcmChunksRef = useRef<Float32Array[]>([]);
   const recordingSourceRef = useRef<VoiceSource | null>(null);
   const recordingPromptRef = useRef<SamplePrompt | null>(null);
+  const recordingModeRef = useRef<RecordingMode>("single");
+  const recordingSentencePromptRef = useRef<SentencePrompt | null>(null);
+  const recordingSentenceTextRef = useRef("");
   const recordingLabelRef = useRef("");
   const recordingTranscriptRef = useRef("");
   const startedAtRef = useRef(0);
 
   const selectedPrompt = SAMPLE_PROMPTS.find((prompt) => prompt.id === selectedPromptId) ?? SAMPLE_PROMPTS[0];
+  const selectedSentencePrompt =
+    sentencePrompts.find((prompt) => prompt.id === selectedSentencePromptId) ?? sentencePrompts[0];
   const recordingSupported = Boolean(navigator.mediaDevices?.getUserMedia) && Boolean(getAudioContextConstructor());
   const requiredPrompts = useMemo(() => requiredPromptsFor(selectedSource), [selectedSource?.targetSamples]);
   const filledPromptIds = useMemo(() => filledPromptIdsOf(selectedSource), [selectedSource?.samples]);
@@ -406,6 +453,31 @@ function RecordTab({
   );
   const selectedPromptFilled = filledPromptIds.has(selectedPrompt.id);
   const nextMissingPrompt = missingPrompts[0];
+
+  useEffect(() => {
+    let active = true;
+    voiceApi
+      .listSentencePrompts()
+      .then((prompts) => {
+        if (!active) {
+          return;
+        }
+        setSentencePrompts(prompts);
+        if (prompts[0]) {
+          setSelectedSentencePromptId((current) => current || prompts[0].id);
+          setSentenceText((current) => current || prompts[0].text);
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setRecorderError(error instanceof Error ? error.message : "문장 녹음 묶음을 불러오지 못했습니다.");
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isRecording) {
@@ -431,6 +503,73 @@ function RecordTab({
     setSelectedPromptId(prompt.id);
     setLabel(prompt.label);
     setTranscript(prompt.text);
+  };
+
+  const applySentencePrompt = (prompt: SentencePrompt) => {
+    setSelectedSentencePromptId(prompt.id);
+    setSentenceText(prompt.text);
+    setSentenceCandidates([]);
+    setSentenceWarnings([]);
+    setSavedCandidateIds(new Set());
+  };
+
+  const candidateDisabledReason = (candidate: SentenceSampleCandidate) => {
+    if (savedCandidateIds.has(candidate.id)) {
+      return "저장됨";
+    }
+    if (!candidate.promptId) {
+      return "항목 없음";
+    }
+    if (!candidate.audioUrl && !candidate.dataBase64) {
+      return "오디오 없음";
+    }
+    if (hasHardBlockingCandidateStatus(candidate) || candidate.duration < minCandidateDuration) {
+      return "저장 불가";
+    }
+    if (candidate.confidence < minManualCandidateConfidence) {
+      return "검수 불가";
+    }
+    return "";
+  };
+
+  const candidateCanSave = (candidate: SentenceSampleCandidate) =>
+    !isSavingSentenceCandidates && !candidateDisabledReason(candidate);
+
+  const candidateIsUseful = (candidate: SentenceSampleCandidate) =>
+    candidateCanSave(candidate) &&
+    hasUsefulCandidateStatus(candidate) &&
+    candidate.confidence >= minAutoCandidateConfidence &&
+    !candidate.warning &&
+    !hasAutoBlockedCandidateStatus(candidate);
+
+  const candidateNeedsReview = (candidate: SentenceSampleCandidate) =>
+    Boolean(candidate.warning) || hasReviewCandidateStatus(candidate);
+
+  const candidateSaveLabel = (candidate: SentenceSampleCandidate) => {
+    const disabledReason = candidateDisabledReason(candidate);
+    if (disabledReason) {
+      return disabledReason;
+    }
+    return candidateNeedsReview(candidate) ? "검수 저장" : "저장";
+  };
+
+  const sampleFromCandidate = (candidate: SentenceSampleCandidate): Omit<VoiceSample, "id" | "createdAt"> => ({
+    promptId: candidate.promptId,
+    label: candidate.label,
+    text: candidate.text,
+    duration: candidate.duration,
+    origin: "recording",
+    audioName: candidate.audioName,
+    audioUrl: candidate.audioUrl,
+    dataBase64: candidate.dataBase64 || candidate.audioUrl
+  });
+
+  const markCandidatesSaved = (ids: string[]) => {
+    setSavedCandidateIds((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
   };
 
   const findNextMissingPrompt = (completedPromptId?: string, skipPromptId?: string) => {
@@ -484,6 +623,71 @@ function RecordTab({
     return onEnsureSource();
   };
 
+  const saveSentenceCandidate = async (candidate: SentenceSampleCandidate) => {
+    if (!candidateCanSave(candidate)) {
+      const reason = candidateDisabledReason(candidate);
+      if (reason) {
+        setRecorderNotice(`${candidate.label} ${reason}`);
+      }
+      return;
+    }
+    const source = await resolveSource();
+    if (!source) {
+      setRecorderError("목소리 소스를 만들지 못했습니다.");
+      return;
+    }
+
+    try {
+      await onAddSample(source.id, sampleFromCandidate(candidate));
+      markCandidatesSaved([candidate.id]);
+      setRecorderNotice(
+        candidateNeedsReview(candidate)
+          ? `${candidate.label} 후보를 검수 저장했습니다. 경고가 있었으니 나중에 한 번 더 들어보세요.`
+          : `${candidate.label} 후보를 샘플로 저장했습니다.`
+      );
+    } catch (error) {
+      setRecorderError(error instanceof Error ? error.message : `${candidate.label} 후보를 저장하지 못했습니다.`);
+    }
+  };
+
+  const saveUsefulSentenceCandidates = async () => {
+    const targets = sentenceCandidates.filter(candidateIsUseful);
+    if (!targets.length) {
+      setRecorderNotice("자동 저장할 만큼 확실한 후보가 없습니다. review/warning 후보는 개별로 들어보고 저장하세요.");
+      return;
+    }
+
+    const source = await resolveSource();
+    if (!source) {
+      setRecorderError("목소리 소스를 만들지 못했습니다.");
+      return;
+    }
+
+    setIsSavingSentenceCandidates(true);
+    setRecorderError("");
+    const savedIds: string[] = [];
+    const failures: string[] = [];
+
+    for (const candidate of targets) {
+      try {
+        await onAddSample(source.id, sampleFromCandidate(candidate));
+        savedIds.push(candidate.id);
+        markCandidatesSaved([candidate.id]);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "알 수 없는 오류";
+        failures.push(`${candidate.label}: ${message}`);
+      }
+    }
+
+    if (savedIds.length) {
+      setRecorderNotice(`${savedIds.length}개 후보를 샘플로 저장했습니다.`);
+    }
+    if (failures.length) {
+      setRecorderError(`${failures.length}개 후보 저장 실패: ${failures.slice(0, 3).join(" / ")}`);
+    }
+    setIsSavingSentenceCandidates(false);
+  };
+
   const cleanupRecording = () => {
     processorRef.current?.disconnect();
     if (processorRef.current) {
@@ -500,12 +704,18 @@ function RecordTab({
     audioContextRef.current = null;
   };
 
-  const startRecording = async () => {
+  const startRecording = async (mode: RecordingMode = "single") => {
     setRecorderError("");
     setRecorderNotice("");
     setIsPreparing(true);
 
     try {
+      const sentencePrompt = selectedSentencePrompt;
+      const activeSentenceText = sentenceText.trim() || sentencePrompt?.text || "";
+      if (mode === "sentence" && !activeSentenceText) {
+        setRecorderError("문장 녹음에 사용할 텍스트를 입력하세요.");
+        return;
+      }
       const source = await resolveSource();
       if (!source) {
         setRecorderError("목소리 소스를 만들지 못했습니다.");
@@ -558,15 +768,28 @@ function RecordTab({
       monitorGainRef.current = monitorGain;
       pcmChunksRef.current = [];
       recordingSourceRef.current = source;
-      recordingPromptRef.current = selectedPrompt;
+      recordingPromptRef.current = mode === "single" ? selectedPrompt : null;
+      recordingModeRef.current = mode;
+      recordingSentencePromptRef.current = mode === "sentence" ? sentencePrompt ?? null : null;
+      recordingSentenceTextRef.current = mode === "sentence" ? activeSentenceText : "";
       recordingLabelRef.current = label.trim() || selectedPrompt.label;
       recordingTranscriptRef.current = transcript.trim() || selectedPrompt.text;
       startedAtRef.current = Date.now();
       setElapsed(0);
       setLastPreviewUrl("");
+      if (mode === "sentence") {
+        setSentenceRecordingUrl("");
+        setSentenceCandidates([]);
+        setSentenceWarnings([]);
+        setSavedCandidateIds(new Set());
+      }
 
       setIsRecording(true);
-      setRecorderNotice("녹음 중입니다. 제시된 샘플을 읽은 뒤 정지를 누르세요.");
+      setRecorderNotice(
+        mode === "sentence"
+          ? "문장 녹음 중입니다. 문장을 자연스럽게 읽고 후보 추출을 누르세요."
+          : "녹음 중입니다. 제시된 샘플을 읽은 뒤 정지를 누르세요."
+      );
     } catch (error) {
       setRecorderError(error instanceof Error ? error.message : "마이크 권한을 확인하세요.");
       cleanupRecording();
@@ -583,12 +806,17 @@ function RecordTab({
 
     const source = recordingSourceRef.current;
     const prompt = recordingPromptRef.current ?? selectedPrompt;
+    const mode = recordingModeRef.current;
+    const sentencePrompt = recordingSentencePromptRef.current;
+    const sentenceTextAtStart = recordingSentenceTextRef.current;
     const chunks = pcmChunksRef.current;
     const sampleRate = audioContextRef.current?.sampleRate ?? 44100;
     cleanupRecording();
     pcmChunksRef.current = [];
     recordingSourceRef.current = null;
     recordingPromptRef.current = null;
+    recordingSentencePromptRef.current = null;
+    recordingSentenceTextRef.current = "";
     setIsRecording(false);
 
     if (!source) {
@@ -604,9 +832,39 @@ function RecordTab({
       const { dataUrl, previewUrl, duration, trimmedSamples } = wavDataUrlFromPcm(
         chunks,
         sampleRate,
-        `recording-${prompt.id}.wav`
+        mode === "sentence" ? `sentence-${sentencePrompt?.id ?? "custom"}.wav` : `recording-${prompt.id}.wav`
       );
       setLastPreviewUrl(previewUrl);
+
+      if (mode === "sentence") {
+        setSentenceRecordingUrl(previewUrl);
+        setIsExtractingSentence(true);
+        try {
+          const result = await voiceApi.extractSentenceSamples({
+            promptId: sentencePrompt?.id,
+            sentencePromptId: sentencePrompt?.id,
+            text: sentenceTextAtStart,
+            audioName: `sentence-${sentencePrompt?.id ?? "custom"}.wav`,
+            audioUrl: previewUrl,
+            dataBase64: dataUrl
+          });
+          setSentenceCandidates(result.candidates);
+          setSentenceWarnings(result.warnings ?? []);
+          setSavedCandidateIds(new Set());
+          if (result.candidates.length) {
+            setRecorderNotice(
+              `${result.totalCandidates || result.candidates.length}개 후보를 추출했습니다. 재생해서 확인한 뒤 저장하세요.${
+                trimmedSamples > 0 ? " 앞뒤 공백은 잘라 저장했습니다." : ""
+              }`
+            );
+          } else {
+            setRecorderNotice("녹음이 너무 짧거나 무음이라 후보를 만들지 못했습니다. 조금 더 길게 다시 녹음해 주세요.");
+          }
+        } finally {
+          setIsExtractingSentence(false);
+        }
+        return;
+      }
 
       await onAddSample(source.id, {
         promptId: prompt.id,
@@ -670,7 +928,13 @@ function RecordTab({
   };
 
   const progress = selectedSource ? progressOf(selectedSource) : 0;
-  const statusText = isRecording ? `${elapsed.toFixed(1)}초 녹음 중` : isPreparing ? "마이크 준비 중" : "대기";
+  const statusText = isRecording
+    ? `${elapsed.toFixed(1)}초 녹음 중`
+    : isPreparing
+      ? "마이크 준비 중"
+      : isExtractingSentence
+        ? "후보 추출 중"
+        : "대기";
 
   return (
     <section className="record-grid">
@@ -687,6 +951,26 @@ function RecordTab({
 
         <ProgressBar value={progress} />
 
+        <div className="record-mode-tabs" role="tablist" aria-label="녹음 모드">
+          <button
+            className={recordMode === "single" ? "is-active" : ""}
+            type="button"
+            onClick={() => setRecordMode("single")}
+            disabled={isRecording}
+          >
+            낱개 녹음
+          </button>
+          <button
+            className={recordMode === "sentence" ? "is-active" : ""}
+            type="button"
+            onClick={() => setRecordMode("sentence")}
+            disabled={isRecording}
+          >
+            문장 녹음
+          </button>
+        </div>
+
+        {recordMode === "single" ? (
         <div className="record-main">
           <div className="current-prompt">
             <div className="prompt-card-head">
@@ -725,7 +1009,7 @@ function RecordTab({
           </div>
 
           <div className="recorder-controls">
-            <button className="primary" type="button" onClick={startRecording} disabled={isRecording || isPreparing}>
+            <button className="primary" type="button" onClick={() => startRecording("single")} disabled={isRecording || isPreparing}>
               녹음 시작
             </button>
             <button type="button" onClick={stopRecording} disabled={!isRecording}>
@@ -741,9 +1025,70 @@ function RecordTab({
           ) : null}
           {recorderError ? <p className="error-line">{recorderError}</p> : <p className="info-line">{recorderNotice}</p>}
         </div>
+        ) : (
+        <div className="record-main sentence-main">
+          <div className="sentence-reader">
+            <label>
+              <FieldLabel>문장 묶음</FieldLabel>
+              <select
+                value={selectedSentencePrompt?.id ?? ""}
+                onChange={(event) => {
+                  const prompt = sentencePrompts.find((item) => item.id === event.target.value);
+                  if (prompt) {
+                    applySentencePrompt(prompt);
+                  }
+                }}
+              >
+                {sentencePrompts.map((prompt) => (
+                  <option key={prompt.id} value={prompt.id}>
+                    {prompt.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedSentencePrompt?.description ? (
+              <p className="sentence-description">{selectedSentencePrompt.description}</p>
+            ) : null}
+            <label>
+              <FieldLabel>읽을 문장</FieldLabel>
+              <textarea value={sentenceText} onChange={(event) => setSentenceText(event.target.value)} rows={5} />
+            </label>
+          </div>
+
+          <div className="recorder-controls">
+            <button
+              className="primary"
+              type="button"
+              onClick={() => startRecording("sentence")}
+              disabled={isRecording || isPreparing || isExtractingSentence || !sentenceText.trim()}
+            >
+              문장 녹음 시작
+            </button>
+            <button type="button" onClick={stopRecording} disabled={!isRecording || recordMode !== "sentence"}>
+              정지 후 후보 추출
+            </button>
+            <span className={`meter ${isRecording ? "is-live" : ""}`}>{statusText}</span>
+          </div>
+
+          {sentenceRecordingUrl ? (
+            <audio className="preview-player" controls src={sentenceRecordingUrl}>
+              <track kind="captions" />
+            </audio>
+          ) : null}
+          {sentenceWarnings.length ? (
+            <div className="warning-list">
+              {sentenceWarnings.map((warning) => (
+                <span key={warning}>{warning}</span>
+              ))}
+            </div>
+          ) : null}
+          {recorderError ? <p className="error-line">{recorderError}</p> : <p className="info-line">{recorderNotice}</p>}
+        </div>
+        )}
       </div>
 
       <div className="record-side">
+        {recordMode === "single" ? (
         <div className="upload-panel">
           <div className="section-head compact">
             <div>
@@ -775,6 +1120,61 @@ function RecordTab({
             ))}
           </div>
         </div>
+        ) : (
+        <div className="upload-panel candidate-panel">
+          <div className="section-head compact">
+            <div>
+              <FieldLabel>추출 후보</FieldLabel>
+              <h2>문장 녹음 후보</h2>
+            </div>
+            <button
+              className="primary"
+              type="button"
+              onClick={saveUsefulSentenceCandidates}
+              disabled={isSavingSentenceCandidates || !sentenceCandidates.some(candidateIsUseful)}
+            >
+              {isSavingSentenceCandidates ? "저장 중" : "쓸만한 후보 모두 저장"}
+            </button>
+          </div>
+          <div className="candidate-list">
+            {sentenceCandidates.length ? (
+              sentenceCandidates.map((candidate) => {
+                const saved = savedCandidateIds.has(candidate.id);
+                const canSave = candidateCanSave(candidate);
+                const confidence = Math.round(candidate.confidence * 100);
+                return (
+                  <div className={`candidate-row ${saved ? "is-saved" : ""}`} key={candidate.id}>
+                    <div className="candidate-main">
+                      <div className="candidate-head">
+                        <strong>{candidate.label}</strong>
+                        <span className="candidate-meta">
+                          {candidate.status || "review"} · {confidence}% · {formatDuration(candidate.duration)}
+                        </span>
+                      </div>
+                      <p>{candidate.text}</p>
+                      {candidate.warning ? <span className="candidate-warning">{candidate.warning}</span> : null}
+                      {candidate.audioUrl || candidate.dataBase64 ? (
+                        <audio controls src={candidate.audioUrl || candidate.dataBase64}>
+                          <track kind="captions" />
+                        </audio>
+                      ) : null}
+                    </div>
+                    <button type="button" onClick={() => saveSentenceCandidate(candidate)} disabled={!canSave}>
+                      {candidateSaveLabel(candidate)}
+                    </button>
+                  </div>
+                );
+              })
+            ) : (
+              <span className="empty-line">
+                {sentenceWarnings.length
+                  ? "녹음이 너무 짧거나 무음이라 후보를 만들지 못했습니다."
+                  : "문장을 녹음하면 잘라낸 후보가 여기에 표시됩니다."}
+              </span>
+            )}
+          </div>
+        </div>
+        )}
 
         <div className="upload-panel samples-panel">
           <div className="section-head compact">
@@ -1380,7 +1780,16 @@ export default function App() {
 
   const handleAddSample = async (sourceId: string, sample: Omit<VoiceSample, "id" | "createdAt">) => {
     const updated = await voiceApi.addSample(sourceId, sample);
-    await refreshSources(updated.id);
+    setSources((current) => {
+      const existing = current.some((source) => source.id === updated.id);
+      return existing ? current.map((source) => (source.id === updated.id ? updated : source)) : [...current, updated];
+    });
+    setSelectedSourceId(updated.id);
+    try {
+      await refreshSources(updated.id);
+    } catch (error) {
+      console.warn("Failed to refresh sources after saving sample.", error);
+    }
     setNotice("샘플을 저장했습니다.");
   };
 

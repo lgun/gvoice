@@ -113,6 +113,51 @@ export interface SamplePrompt {
   text: string;
 }
 
+export interface SentencePrompt {
+  id: string;
+  title: string;
+  text: string;
+  description?: string;
+  coveredPromptIds?: string[];
+  promptIds?: string[];
+}
+
+export interface SentenceExtractionInput {
+  promptId?: string;
+  sentencePromptId?: string;
+  text: string;
+  audioName: string;
+  dataBase64?: string;
+  audioUrl?: string;
+}
+
+export interface SentenceSampleCandidate {
+  id: string;
+  promptId: string;
+  label: string;
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+  duration: number;
+  confidence: number;
+  status?: string;
+  warning?: string;
+  audioName: string;
+  audioUrl?: string;
+  dataBase64?: string;
+}
+
+export interface SentenceExtractionResult {
+  prompt?: SentencePrompt;
+  promptId?: string;
+  text: string;
+  sourceDuration?: number;
+  trimmedDuration?: number;
+  totalCandidates: number;
+  candidates: SentenceSampleCandidate[];
+  warnings?: string[];
+}
+
 export const SAMPLE_PROMPTS: SamplePrompt[] = [
   { id: "vowel-a", label: "모음 아", text: "아" },
   { id: "vowel-eo", label: "모음 어", text: "어" },

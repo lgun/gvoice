@@ -9,6 +9,10 @@ import {
   PreviewResult,
   SAMPLE_PROMPTS,
   SaveSpeechItemInput,
+  SentenceExtractionInput,
+  SentenceExtractionResult,
+  SentencePrompt,
+  SentenceSampleCandidate,
   SpeechItem,
   SpeechLibrarySettings,
   SynthesisRequest,
@@ -21,6 +25,61 @@ type CreateSourceInput = Partial<
 >;
 
 type AddSampleInput = Omit<VoiceSample, "id" | "createdAt">;
+
+type LooseRecord = Record<string, unknown>;
+
+type LegacySentencePrompt = Partial<SentencePrompt> & {
+  ID?: string;
+  Title?: string;
+  Text?: string;
+  Description?: string;
+  CoveredPromptIDs?: string[];
+  CoveredPromptIds?: string[];
+  PromptID?: string;
+  PromptId?: string;
+  PromptIDs?: string[];
+  PromptIds?: string[];
+  covered_prompt_ids?: string[];
+  prompt_ids?: string[];
+};
+
+type LegacySentenceCandidate = Partial<SentenceSampleCandidate> & {
+  ID?: string;
+  PromptID?: string;
+  PromptId?: string;
+  Label?: string;
+  Text?: string;
+  StartSeconds?: number;
+  Start?: number;
+  EndSeconds?: number;
+  End?: number;
+  Duration?: number;
+  DurationSeconds?: number;
+  Confidence?: number;
+  Score?: number;
+  Status?: string;
+  Warning?: string;
+  AudioName?: string;
+  AudioURL?: string;
+  AudioUrl?: string;
+  DataBase64?: string;
+  data?: string;
+};
+
+type LegacySentenceResult = Partial<SentenceExtractionResult> & {
+  Prompt?: LegacySentencePrompt;
+  prompt?: LegacySentencePrompt;
+  PromptID?: string;
+  PromptId?: string;
+  Text?: string;
+  TotalCandidates?: number;
+  Total?: number;
+  SourceDuration?: number;
+  TrimmedDuration?: number;
+  Candidates?: LegacySentenceCandidate[];
+  Warnings?: string[];
+  warning?: string;
+};
 
 type LegacySpeechItem = Partial<SpeechItem> & {
   durationMillis?: number;
@@ -86,6 +145,10 @@ interface WailsApp {
   GetSpeechItemAudioURL?: (id: string) => Promise<string> | string;
   SaveSpeechItem?: (input: SaveSpeechItemInput) => Promise<SpeechItem> | SpeechItem;
   DeleteSpeechItem?: (id: string) => Promise<void> | void;
+  ListSentencePrompts?: () => Promise<LegacySentencePrompt[]> | LegacySentencePrompt[];
+  ExtractSentenceSamples?: (
+    request: SentenceExtractionInput
+  ) => Promise<LegacySentenceResult> | LegacySentenceResult;
 }
 
 declare global {
@@ -102,6 +165,23 @@ const STORAGE_KEY = "guvoice.sources.v3";
 const OUTPUT_DIRECTORY_KEY = "guvoice.outputDirectory.v1";
 const SPEECH_LIBRARY_KEY = "guvoice.speechLibrary.items.v1";
 const SPEECH_LIBRARY_DIRECTORY_KEY = "guvoice.speechLibrary.directory.v1";
+
+const DEMO_SENTENCE_PROMPTS: SentencePrompt[] = [
+  {
+    id: "sentence-basic-1",
+    title: "기본 음절 한 번에 읽기",
+    text: "아 어 오 우 으 이 애 에 야 여 요 유 가 나 다 라 마 바 사 자 차 카 타 파 하",
+    description: "필수 음절 후보를 한 번 녹음으로 추출합니다.",
+    promptIds: SAMPLE_PROMPTS.slice(0, 25).map((prompt) => prompt.id)
+  },
+  {
+    id: "sentence-tone-1",
+    title: "짧은 말투 문장",
+    text: "안녕하세요. 오늘은 맑고 차분하게 말합니다. 작고 빠른 소리도 읽어 봅니다.",
+    description: "말투 샘플 후보를 함께 확인합니다.",
+    promptIds: SAMPLE_PROMPTS.slice(18, 25).map((prompt) => prompt.id)
+  }
+];
 
 const nowIso = () => new Date().toISOString();
 
@@ -257,6 +337,179 @@ const normalizeSpeechItem = (item: LegacySpeechItem): SpeechItem => {
     audioName: item.audioName || item.fileName || item.FileName,
     audioUrl: item.audioUrl || item.AudioURL || item.AudioUrl,
     path: item.path
+  };
+};
+
+const asRecord = (value: unknown): LooseRecord =>
+  value && typeof value === "object" ? (value as LooseRecord) : {};
+
+const stringValue = (...values: unknown[]) => {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+};
+
+const numberValue = (...values: unknown[]) => {
+  for (const value of values) {
+    const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+    if (Number.isFinite(number)) {
+      return number;
+    }
+  }
+  return 0;
+};
+
+const stringArrayValue = (...values: unknown[]) => {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item).trim()).filter(Boolean);
+    }
+  }
+  return undefined;
+};
+
+const normalizeAudioDataUrl = (value?: string) => {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.startsWith("data:") ? trimmed : `data:audio/wav;base64,${trimmed}`;
+};
+
+const promptById = (promptId: string) => SAMPLE_PROMPTS.find((prompt) => prompt.id === promptId);
+
+const stableIdPart = (value: string | number) =>
+  String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣_-]+/gi, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
+
+const normalizeSentencePrompt = (prompt: LegacySentencePrompt): SentencePrompt => {
+  const record = asRecord(prompt);
+  const id =
+    stringValue(prompt.id, prompt.ID, record.promptID, record.promptId, record.prompt_id, prompt.PromptID, prompt.PromptId) ||
+    createId("sentence-prompt");
+  const text = stringValue(prompt.text, prompt.Text, record.sentenceText, record.sentence_text);
+  const title = stringValue(prompt.title, prompt.Title, record.name) || (text ? speechTitleFromText(text) : id);
+  const coveredPromptIds = stringArrayValue(
+    prompt.coveredPromptIds,
+    prompt.CoveredPromptIDs,
+    prompt.CoveredPromptIds,
+    prompt.covered_prompt_ids,
+    record.coveredPromptIDs,
+    record.coveredPromptIds,
+    record.covered_prompt_ids
+  );
+  const promptIds =
+    stringArrayValue(
+      prompt.promptIds,
+      prompt.PromptIDs,
+      prompt.PromptIds,
+      prompt.prompt_ids,
+      record.promptIDs,
+      record.promptIds,
+      record.prompt_ids
+    ) ?? coveredPromptIds;
+
+  return {
+    id,
+    title,
+    text,
+    description: stringValue(prompt.description, prompt.Description) || undefined,
+    coveredPromptIds,
+    promptIds
+  };
+};
+
+const normalizeSentenceCandidate = (candidate: LegacySentenceCandidate, index = 0): SentenceSampleCandidate => {
+  const record = asRecord(candidate);
+  const promptId = stringValue(
+    candidate.promptId,
+    candidate.PromptID,
+    candidate.PromptId,
+    record.promptID,
+    record.promptId,
+    record.prompt_id
+  );
+  const prompt = promptById(promptId);
+  const startSeconds = Math.max(
+    0,
+    numberValue(candidate.startSeconds, candidate.StartSeconds, candidate.Start, record.start, record.start_seconds)
+  );
+  const duration = Math.max(
+    0,
+    numberValue(candidate.duration, candidate.Duration, candidate.DurationSeconds, record.duration_seconds)
+  );
+  const endSeconds = Math.max(
+    startSeconds,
+    numberValue(candidate.endSeconds, candidate.EndSeconds, candidate.End, record.end, record.end_seconds) ||
+      startSeconds + duration
+  );
+  const normalizedDuration = duration || Math.max(0, endSeconds - startSeconds);
+  const confidenceValue = numberValue(candidate.confidence, candidate.Confidence, candidate.Score, record.score);
+  const dataBase64 = normalizeAudioDataUrl(
+    stringValue(candidate.dataBase64, candidate.DataBase64, candidate.data, record.dataBase64, record.data_base64)
+  );
+  const audioUrl =
+    stringValue(candidate.audioUrl, candidate.AudioURL, candidate.AudioUrl, record.audioURL, record.audioUrl, record.audio_url) ||
+    dataBase64;
+  const audioName =
+    stringValue(candidate.audioName, candidate.AudioName) ||
+    `${promptId || `candidate-${index + 1}`}.wav`;
+  const fallbackId = `candidate-${stableIdPart(promptId || index + 1)}-${stableIdPart(audioName)}-${Math.round(
+    startSeconds * 1000
+  )}-${Math.round(endSeconds * 1000)}`;
+
+  return {
+    id: stringValue(candidate.id, candidate.ID, record.id, record.ID) || fallbackId,
+    promptId,
+    label: stringValue(candidate.label, candidate.Label) || prompt?.label || promptId || `후보 ${index + 1}`,
+    text: stringValue(candidate.text, candidate.Text) || prompt?.text || "",
+    startSeconds,
+    endSeconds,
+    duration: normalizedDuration,
+    confidence: Math.max(0, Math.min(1, confidenceValue > 1 ? confidenceValue / 100 : confidenceValue)),
+    status: stringValue(candidate.status, candidate.Status) || undefined,
+    warning: stringValue(candidate.warning, candidate.Warning) || undefined,
+    audioName,
+    audioUrl,
+    dataBase64
+  };
+};
+
+const normalizeSentenceResult = (result?: LegacySentenceResult | null): SentenceExtractionResult => {
+  const record = asRecord(result);
+  const promptRaw = result?.prompt ?? result?.Prompt ?? record.prompt;
+  const prompt = promptRaw && typeof promptRaw === "object" ? normalizeSentencePrompt(promptRaw as LegacySentencePrompt) : undefined;
+  const candidatesRaw = result?.candidates ?? result?.Candidates ?? record.candidates ?? [];
+  const candidates = Array.isArray(candidatesRaw)
+    ? candidatesRaw.map((candidate, index) => normalizeSentenceCandidate(candidate, index))
+    : [];
+  const warnings =
+    stringArrayValue(result?.warnings, result?.Warnings, record.warnings) ??
+    [stringValue(result?.warning, record.warning)].filter(Boolean);
+  const promptId =
+    stringValue(result?.promptId, result?.PromptID, result?.PromptId, record.promptID, record.promptId, record.prompt_id) ||
+    prompt?.id ||
+    undefined;
+
+  return {
+    prompt,
+    promptId,
+    text: stringValue(result?.text, result?.Text, record.text, prompt?.text),
+    sourceDuration:
+      numberValue(result?.sourceDuration, result?.SourceDuration, record.sourceDuration, record.source_duration) || undefined,
+    trimmedDuration:
+      numberValue(result?.trimmedDuration, result?.TrimmedDuration, record.trimmedDuration, record.trimmed_duration) || undefined,
+    totalCandidates:
+      numberValue(result?.totalCandidates, result?.TotalCandidates, result?.Total, record.totalCandidates, record.total_candidates) ||
+      candidates.length,
+    candidates,
+    warnings
   };
 };
 
@@ -552,6 +805,53 @@ const fallbackApi = {
 
   async deleteSpeechItem(id: string) {
     writeSpeechItems(readSpeechItems().filter((item) => item.id !== id));
+  },
+
+  async listSentencePrompts() {
+    return DEMO_SENTENCE_PROMPTS;
+  },
+
+  async extractSentenceSamples(input: SentenceExtractionInput): Promise<SentenceExtractionResult> {
+    const promptPack =
+      DEMO_SENTENCE_PROMPTS.find((prompt) => prompt.id === (input.sentencePromptId || input.promptId)) ??
+      DEMO_SENTENCE_PROMPTS[0];
+    const promptIds = (promptPack.promptIds?.length ? promptPack.promptIds : SAMPLE_PROMPTS.map((prompt) => prompt.id)).slice(
+      0,
+      8
+    );
+    const candidates = promptIds.map((promptId, index) => {
+      const prompt = promptById(promptId) ?? SAMPLE_PROMPTS[index % SAMPLE_PROMPTS.length];
+      const duration = Math.min(0.9, Math.max(0.28, prompt.text.length * 0.08));
+      const startSeconds = index * 0.44;
+      const audioUrl = createDemoWav(prompt.text || input.text);
+      return normalizeSentenceCandidate(
+        {
+          id: `demo-candidate-${promptId}`,
+          promptId,
+          label: prompt.label,
+          text: prompt.text,
+          startSeconds,
+          endSeconds: startSeconds + duration,
+          duration,
+          confidence: Math.max(0.58, 0.92 - index * 0.04),
+          status: index % 5 === 4 ? "review" : "usable",
+          warning: index % 5 === 4 ? "데모 후보라 저장 전 확인해 주세요." : undefined,
+          audioName: `demo-${promptId}.wav`,
+          audioUrl,
+          dataBase64: audioUrl
+        },
+        index
+      );
+    });
+
+    return {
+      prompt: promptPack,
+      promptId: promptPack.id,
+      text: input.text,
+      totalCandidates: candidates.length,
+      candidates,
+      warnings: ["Browser fallback이 만든 데모 후보입니다."]
+    };
   }
 };
 
@@ -652,5 +952,15 @@ export const voiceApi = {
     ),
 
   deleteSpeechItem: (id: string) =>
-    callWails("DeleteSpeechItem", () => fallbackApi.deleteSpeechItem(id), id)
+    callWails("DeleteSpeechItem", () => fallbackApi.deleteSpeechItem(id), id),
+
+  listSentencePrompts: () =>
+    callWails("ListSentencePrompts", fallbackApi.listSentencePrompts).then((prompts) =>
+      (Array.isArray(prompts) ? prompts : DEMO_SENTENCE_PROMPTS).map(normalizeSentencePrompt)
+    ),
+
+  extractSentenceSamples: (input: SentenceExtractionInput) =>
+    callWails("ExtractSentenceSamples", () => fallbackApi.extractSentenceSamples(input), input).then(
+      normalizeSentenceResult
+    )
 };

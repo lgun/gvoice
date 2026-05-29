@@ -32,6 +32,51 @@ type UIVoiceSample struct {
 	DataBase64 string  `json:"dataBase64,omitempty"`
 }
 
+type UISentencePrompt struct {
+	ID               string   `json:"id"`
+	Title            string   `json:"title"`
+	Text             string   `json:"text"`
+	Description      string   `json:"description"`
+	CoveredPromptIDs []string `json:"coveredPromptIds"`
+	PromptIDs        []string `json:"promptIds"`
+}
+
+type UISentenceExtractionRequest struct {
+	PromptID         string `json:"promptId,omitempty"`
+	SentencePromptID string `json:"sentencePromptId,omitempty"`
+	Text             string `json:"text,omitempty"`
+	AudioName        string `json:"audioName,omitempty"`
+	AudioURL         string `json:"audioUrl,omitempty"`
+	DataBase64       string `json:"dataBase64,omitempty"`
+}
+
+type UISentenceSampleCandidate struct {
+	ID           string  `json:"id"`
+	PromptID     string  `json:"promptId"`
+	Label        string  `json:"label"`
+	Text         string  `json:"text"`
+	StartSeconds float64 `json:"startSeconds"`
+	EndSeconds   float64 `json:"endSeconds"`
+	Duration     float64 `json:"duration"`
+	Confidence   int     `json:"confidence"`
+	Status       string  `json:"status"`
+	Warning      string  `json:"warning,omitempty"`
+	AudioName    string  `json:"audioName"`
+	AudioURL     string  `json:"audioUrl"`
+	DataBase64   string  `json:"dataBase64"`
+}
+
+type UISentenceExtractionResult struct {
+	PromptID        string                      `json:"promptId"`
+	Prompt          UISentencePrompt            `json:"prompt"`
+	Text            string                      `json:"text"`
+	SourceDuration  float64                     `json:"sourceDuration"`
+	TrimmedDuration float64                     `json:"trimmedDuration"`
+	TotalCandidates int                         `json:"totalCandidates"`
+	Candidates      []UISentenceSampleCandidate `json:"candidates"`
+	Warnings        []string                    `json:"warnings,omitempty"`
+}
+
 type UIVoiceSource struct {
 	ID            string          `json:"id"`
 	Name          string          `json:"name"`

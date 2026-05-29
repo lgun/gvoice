@@ -17,6 +17,13 @@ type promptDefinition struct {
 	Text  string
 }
 
+type sentencePromptDefinition struct {
+	ID          string
+	Title       string
+	Text        string
+	Description string
+}
+
 var guvoicePromptCatalog = []promptDefinition{
 	{ID: "vowel-a", Label: "모음 아", Text: "아"},
 	{ID: "vowel-eo", Label: "모음 어", Text: "어"},
@@ -46,6 +53,27 @@ var guvoicePromptCatalog = []promptDefinition{
 	{ID: "tone-soft", Label: "부드러운 톤", Text: "오늘은 맑고 차분하게 말합니다."},
 	{ID: "tone-fast", Label: "빠른 톤", Text: "작은 소리로 또렷하게 읽어 보겠습니다."},
 	{ID: "tone-question", Label: "질문 톤", Text: "이 설정으로 미리듣기를 만들어 볼까요?"},
+}
+
+var guvoiceSentencePrompts = []sentencePromptDefinition{
+	{
+		ID:          "minimum-all-25",
+		Title:       "필수 소리 한 번에 읽기",
+		Text:        "아 어 오 우 으 이 애 에 야 여 요 유를 말하고, 가 나 다 라 마 바 사 자 차 카 타 파 하를 또박또박 이어 말해요.",
+		Description: "기본 필수 25개 prompt를 한 녹음에서 최대한 많이 뽑기 위한 점검 문장입니다.",
+	},
+	{
+		ID:          "vowels-then-town",
+		Title:       "모음과 마을 문장",
+		Text:        "아이가 어여쁜 오리와 우유를 보고 으쓱이며 애에게 에너지와 야유회 이야기를 해요. 가게 나무 다리 라디오 마차 바다 사자 자동차 카메라 타자 파도 하늘도 읽어요.",
+		Description: "모음 계열을 먼저 읽고 대표 자음 계열을 자연스러운 낱말 속에서 확인합니다.",
+	},
+	{
+		ID:          "short-review-line",
+		Title:       "짧은 검수 줄",
+		Text:        "아, 어, 오, 우, 으, 이, 애, 에, 야, 여, 요, 유. 가 나 다 라 마 바 사 자 차 카 타 파 하.",
+		Description: "짧게 다시 녹음하거나 누락된 후보를 빠르게 검수할 때 쓰는 문장입니다.",
+	},
 }
 
 var repPromptByChoseong = map[string]string{
@@ -94,6 +122,20 @@ func promptDefinitionForID(promptID string) promptDefinition {
 		}
 	}
 	return promptDefinition{ID: promptID, Label: promptID, Text: promptID}
+}
+
+func sentencePromptDefinitionForID(promptID string) (sentencePromptDefinition, bool) {
+	for _, prompt := range guvoiceSentencePrompts {
+		if prompt.ID == promptID {
+			return prompt, true
+		}
+	}
+	return sentencePromptDefinition{}, false
+}
+
+func sentencePromptCoveredPromptIDs(text string) []string {
+	_, promptIDs := sequenceForText(text)
+	return promptIDs
 }
 
 func missingRequiredPromptIDs(target int, samples []model.Sample) []string {

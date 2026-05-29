@@ -45,6 +45,7 @@ Important UX rules:
 - Recording must happen inside guvoice. The Record tab uses browser/WebView2 `getUserMedia` + Web Audio API PCM capture; if there is no selected source, pressing Record creates one automatically before requesting microphone permission.
 - After saving a recording, the Record tab advances automatically to the next missing prompt.
 - The Record tab includes next missing, skip, and re-record controls to reduce click fatigue.
+- The Record tab now also has a sentence recording flow. Users can read a built-in Korean sentence pack or entered sentence through in-app `getUserMedia` recording, then review backend-extracted sample candidates before saving them.
 - The Speak tab includes a `보관함 저장` action that creates an MP3 from the current text, source, and options, then stores it in the app's speech library folder.
 - The `보관함` tab lists saved speech items with title, source, date, duration, and file path. Items can be deleted, and item audio is loaded lazily through `재생 준비` before rendering `<audio controls>`.
 - Avoid broad page-level inner scrolling on desktop. Keep the main tool surface fitted to the Wails window; only long source/sample/prompt lists should scroll.
@@ -59,12 +60,14 @@ Frontend:
 - `frontend/src/lib/audio.ts`: shared Web Audio helpers for recording/upload decoding, leading/trailing silence trim, and mono 16-bit WAV encoding.
 - `frontend/src/types.ts`: UI data contracts.
 - `frontend/src/styles.css`: operational desktop-tool styling.
+- Record sentence capture lives in the existing React UI and uses the same browser/WebView2 microphone path before sending the known script and WAV data to the backend for candidate extraction.
 
 Backend:
 
 - `main.go`: Wails v2 app entrypoint, embeds `frontend/dist`.
 - `app.go`: backend domain methods and sample-based WAV synthesis orchestration.
-- `frontend_api.go`: Wails methods matching the frontend adapter names, including directory selection via Wails `OpenDirectoryDialog`.
+- `frontend_api.go`: Wails methods matching the frontend adapter names, including directory selection via Wails `OpenDirectoryDialog`, `ListSentencePrompts`, and `ExtractSentenceSamples`.
+- `sentence_extraction.go`: sentence recording prompt/candidate extraction. This is VAD/energy plus script-proportional segmentation heuristic, not a complete ASR or forced-alignment engine.
 - `sample_validation.go`: backend WAV normalization/trim/readiness validation helpers.
 - `prompts.go`: guvoice minimal prompt catalog, text-to-prompt mapping, and usable WAV sample checks.
 - `internal/storage/store.go`: JSON state, source/sample/upload/export persistence, including export and speech library folder preferences.
@@ -89,10 +92,16 @@ Prosody note: spaces, commas, periods, `!`, `?`, and `~` are synthesis controls,
 - `ListSpeechItems` returns metadata only. Audio data is loaded on demand through `GetSpeechItemAudio`, which returns `data:audio/mpeg;base64,...` for the selected saved item.
 - Speech library backend API methods are `GetSpeechLibrarySettings`, `SetSpeechLibraryDirectory`, `ChooseSpeechLibraryDirectory`, `ListSpeechItems`, `SaveSpeechItem`, `DeleteSpeechItem`, and `GetSpeechItemAudio`.
 - `SaveSpeechItem` applies nested options including speed, pitch, clarity, and noise reduction.
+- Sentence recording backend API methods are `ListSentencePrompts` and `ExtractSentenceSamples`.
+- Sentence extraction returns candidates with `id`, `promptId`, `label`, `text`, `timing`, `confidence`, `status`/`warning`, `audioName`, `audioUrl`, and `dataBase64`.
+- Sentence extraction is intentionally conservative: silent, near-silent, too-short, insufficient-speech, or one/two-sound recordings return `candidates=[]` so a source is not incorrectly filled.
+- Candidate playback/review is part of the workflow before saving. The frontend supports saving individual candidates and "save all usable candidates"; bulk save only includes candidates with ready/usable/good/ok/accepted status, `confidence >= 0.75`, and no warning. Review/warning candidates require individual listening and saving.
+- After a candidate save succeeds, a later refresh failure is still treated as save success to reduce duplicate-save retry risk.
 
 ## Current Limitations
 
 - Sample concatenation synthesis is implemented for WAV samples recorded or uploaded through the current app flows.
+- Sentence recording candidate extraction is heuristic. It assumes the known script was read reasonably and uses VAD/energy and proportional timing rather than ASR/forced alignment, so candidate boundaries need user review before saving.
 - Wails generated `frontend/wailsjs/` and `frontend/package.json.md5` are ignored because the current frontend adapter does not import generated bindings directly.
 - Older samples captured as WebM/Opus by previous builds are not usable directly from disk; re-upload them through the current upload flow or re-record them so they are stored as WAV samples.
 - Upload uses WebView2/browser `decodeAudioData` and then stores mono 16-bit WAV. Formats/codecs the WebView cannot decode still fail with a clear error.
@@ -101,7 +110,7 @@ Prosody note: spaces, commas, periods, `!`, `?`, and `~` are synthesis controls,
 
 ## Verification Already Done
 
-The parent session reproduced the current implementation with:
+This implementation has been checked during the current/parent work with:
 
 ```powershell
 go test ./...
@@ -112,7 +121,7 @@ git diff --check
 wails build
 ```
 
-Result: passed.
+Result during implementation verification: passed. A final parent-session verification may still continue separately if more work is added.
 
 Go and Wails were installed locally for this workspace session:
 
@@ -143,7 +152,8 @@ MP3 encoding no longer depends on `ffmpeg`; it is handled by a bundled pure Go d
 
 ## Recommended Next Steps
 
-1. Run `wails dev` and manually check the recording queue, skip/re-record controls, upload trim, export folder picker, speech library save/list/delete, and lazy playback in WebView2.
-2. Add focused regression tests around export-folder default normalization if not already covered enough by storage/API tests.
-3. Consider broader import/migration tooling for samples captured by older WebM/Opus builds.
-4. Continue improving DSP quality only within the sample-based product direction; do not weaken the rule that unusable sources cannot synthesize speech.
+1. Run `wails dev` and manually check the recording queue, sentence recording with a real microphone, candidate playback/save, upload trim, export folder picker, speech library save/list/delete, and lazy playback in WebView2.
+2. Improve the sentence pack and candidate boundary quality, especially for Korean prompt coverage and natural read pacing.
+3. Investigate a more accurate free forced-alignment or ASR-assisted candidate path if it can stay local/practical.
+4. Add focused regression tests around export-folder default normalization if not already covered enough by storage/API tests.
+5. Continue improving DSP quality only within the sample-based product direction; do not weaken the rule that unusable sources cannot synthesize speech.
