@@ -1251,6 +1251,7 @@ function LibraryTab({
   speechLibrarySettings,
   onSetSpeechLibraryDirectory,
   onChooseSpeechLibraryDirectory,
+  onOpenSpeechLibraryDirectory,
   onGetSpeechItemAudio,
   onDeleteSpeechItem
 }: {
@@ -1258,6 +1259,7 @@ function LibraryTab({
   speechLibrarySettings: SpeechLibrarySettings | null;
   onSetSpeechLibraryDirectory: (path: string) => Promise<void>;
   onChooseSpeechLibraryDirectory: () => Promise<void>;
+  onOpenSpeechLibraryDirectory: () => Promise<void>;
   onGetSpeechItemAudio: (id: string) => Promise<string>;
   onDeleteSpeechItem: (id: string) => Promise<void>;
 }) {
@@ -1318,6 +1320,9 @@ function LibraryTab({
           <div className="button-pair">
             <button type="button" onClick={onChooseSpeechLibraryDirectory}>
               찾아보기
+            </button>
+            <button type="button" onClick={onOpenSpeechLibraryDirectory}>
+              폴더 열기
             </button>
             <button className="primary" type="submit">
               저장
@@ -1430,7 +1435,8 @@ function ManageTab({
   onUpdate,
   onDelete,
   onSetOutputDirectory,
-  onChooseOutputDirectory
+  onChooseOutputDirectory,
+  onOpenOutputDirectory
 }: {
   selectedSource?: VoiceSource;
   outputDirectory: OutputDirectorySettings | null;
@@ -1439,6 +1445,7 @@ function ManageTab({
   onDelete: () => void;
   onSetOutputDirectory: (path: string) => Promise<void>;
   onChooseOutputDirectory: () => Promise<void>;
+  onOpenOutputDirectory: () => Promise<void>;
 }) {
   const [newName, setNewName] = useState("");
   const [newSpeaker, setNewSpeaker] = useState("");
@@ -1564,6 +1571,9 @@ function ManageTab({
           <div className="button-pair">
             <button type="button" onClick={onChooseOutputDirectory}>
               찾아보기
+            </button>
+            <button type="button" onClick={onOpenOutputDirectory}>
+              폴더 열기
             </button>
             <button className="primary" type="submit">
               저장
@@ -1848,6 +1858,16 @@ export default function App() {
     }
   };
 
+  const handleOpenOutputDirectory = async () => {
+    try {
+      const settings = await voiceApi.openOutputDirectory();
+      setOutputDirectory(settings);
+      setNotice(settings.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "MP3 저장 폴더를 열지 못했습니다.");
+    }
+  };
+
   const handleSetSpeechLibraryDirectory = async (path: string) => {
     try {
       const settings = await voiceApi.setSpeechLibraryDirectory(path);
@@ -1865,6 +1885,16 @@ export default function App() {
       setNotice(settings.message);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "말하기 저장 폴더를 선택하지 못했습니다.");
+    }
+  };
+
+  const handleOpenSpeechLibraryDirectory = async () => {
+    try {
+      const settings = await voiceApi.openSpeechLibraryDirectory();
+      setSpeechLibrarySettings(settings);
+      setNotice(settings.message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "말하기 보관함 폴더를 열지 못했습니다.");
     }
   };
 
@@ -1995,6 +2025,7 @@ export default function App() {
               speechLibrarySettings={speechLibrarySettings}
               onSetSpeechLibraryDirectory={handleSetSpeechLibraryDirectory}
               onChooseSpeechLibraryDirectory={handleChooseSpeechLibraryDirectory}
+              onOpenSpeechLibraryDirectory={handleOpenSpeechLibraryDirectory}
               onGetSpeechItemAudio={handleGetSpeechItemAudio}
               onDeleteSpeechItem={handleDeleteSpeechItem}
             />
@@ -2009,6 +2040,7 @@ export default function App() {
               onDelete={handleDeleteSource}
               onSetOutputDirectory={handleSetOutputDirectory}
               onChooseOutputDirectory={handleChooseOutputDirectory}
+              onOpenOutputDirectory={handleOpenOutputDirectory}
             />
           ) : null}
         </div>

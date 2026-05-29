@@ -130,6 +130,10 @@ interface WailsApp {
     | Promise<Partial<OutputDirectorySettings> | string>
     | Partial<OutputDirectorySettings>
     | string;
+  OpenOutputDirectory?: () =>
+    | Promise<Partial<OutputDirectorySettings> | string>
+    | Partial<OutputDirectorySettings>
+    | string;
   GetSpeechLibrarySettings?: () =>
     | Promise<Partial<SpeechLibrarySettings> | string>
     | Partial<SpeechLibrarySettings>
@@ -138,6 +142,10 @@ interface WailsApp {
     path: string
   ) => Promise<Partial<SpeechLibrarySettings> | string> | Partial<SpeechLibrarySettings> | string;
   ChooseSpeechLibraryDirectory?: () =>
+    | Promise<Partial<SpeechLibrarySettings> | string>
+    | Partial<SpeechLibrarySettings>
+    | string;
+  OpenSpeechLibraryDirectory?: () =>
     | Promise<Partial<SpeechLibrarySettings> | string>
     | Partial<SpeechLibrarySettings>
     | string;
@@ -752,6 +760,13 @@ const fallbackApi = {
     } satisfies OutputDirectorySettings;
   },
 
+  async openOutputDirectory() {
+    return {
+      ...(await fallbackApi.getOutputDirectory()),
+      message: "브라우저에서는 로컬 폴더를 직접 열 수 없습니다. Wails 데스크톱 앱에서 실행하거나 경로를 직접 열어 주세요."
+    } satisfies OutputDirectorySettings;
+  },
+
   async getSpeechLibrarySettings() {
     return normalizeSpeechLibrarySettings(
       localStorage.getItem(SPEECH_LIBRARY_DIRECTORY_KEY) ?? "",
@@ -769,6 +784,13 @@ const fallbackApi = {
     return {
       ...(await fallbackApi.getSpeechLibrarySettings()),
       message: "브라우저 데모에서는 말하기 저장 폴더 선택 창을 열 수 없습니다. 경로를 직접 입력해 주세요."
+    } satisfies SpeechLibrarySettings;
+  },
+
+  async openSpeechLibraryDirectory() {
+    return {
+      ...(await fallbackApi.getSpeechLibrarySettings()),
+      message: "브라우저에서는 로컬 폴더를 직접 열 수 없습니다. Wails 데스크톱 앱에서 실행하거나 경로를 직접 열어 주세요."
     } satisfies SpeechLibrarySettings;
   },
 
@@ -931,6 +953,11 @@ export const voiceApi = {
       normalizeOutputDirectory(value)
     ),
 
+  openOutputDirectory: () =>
+    callWails("OpenOutputDirectory", fallbackApi.openOutputDirectory).then((value) =>
+      normalizeOutputDirectory(value)
+    ),
+
   getSpeechLibrarySettings: () =>
     callWails("GetSpeechLibrarySettings", fallbackApi.getSpeechLibrarySettings).then((value) =>
       normalizeSpeechLibrarySettings(value)
@@ -945,6 +972,11 @@ export const voiceApi = {
 
   chooseSpeechLibraryDirectory: () =>
     callWails("ChooseSpeechLibraryDirectory", fallbackApi.chooseSpeechLibraryDirectory).then((value) =>
+      normalizeSpeechLibrarySettings(value)
+    ),
+
+  openSpeechLibraryDirectory: () =>
+    callWails("OpenSpeechLibraryDirectory", fallbackApi.openSpeechLibraryDirectory).then((value) =>
       normalizeSpeechLibrarySettings(value)
     ),
 

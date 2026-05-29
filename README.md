@@ -20,10 +20,10 @@ The core product rule is strict: an empty source, an incomplete source, or a sou
 - Ignore legacy silent/unreadable samples when deciding whether a source is ready.
 - Preview generated audio as WAV.
 - Export generated audio as real MP3.
-- Configure the MP3 export folder with a Wails directory picker. Leaving the setting at default uses the app's `exports` folder.
+- Configure the MP3 export folder with a Wails directory picker and open the configured folder from the app. Leaving the setting at default uses the app's `exports` folder.
 - Save generated MP3 speech items to an in-app speech library from the Speak tab with `보관함 저장`.
 - Use the `보관함` tab to list saved speech items, inspect title/source/date/duration/file path, delete items, and prepare an item for lazy `<audio controls>` playback.
-- Configure the speech library folder separately from the MP3 export folder. The app rejects settings where both folders resolve to the same physical path.
+- Configure the speech library folder separately from the MP3 export folder, and open the configured folder from the app. The app rejects settings where both folders resolve to the same physical path.
 - Run the frontend in a normal browser with a localStorage fallback when Wails bindings are unavailable.
 
 ## Audio Behavior

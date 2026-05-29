@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -273,6 +275,21 @@ func (a *App) ChooseOutputDirectory() (UIOutputDirectorySettings, error) {
 	return outputDirectorySettings(store, "MP3 output directory updated."), nil
 }
 
+func (a *App) OpenOutputDirectory() (UIOutputDirectorySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	dir, err := store.ResolveMP3ExportDir()
+	if err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	if err := openFolder(dir); err != nil {
+		return UIOutputDirectorySettings{}, err
+	}
+	return outputDirectorySettings(store, "MP3 output folder opened."), nil
+}
+
 func (a *App) GetSpeechLibrarySettings() (UISpeechLibrarySettings, error) {
 	store, err := a.ensureStore()
 	if err != nil {
@@ -323,6 +340,21 @@ func (a *App) ChooseSpeechLibraryDirectory() (UISpeechLibrarySettings, error) {
 		return speechLibrarySettings(store, "Speech library directory reset to the default app data folder."), nil
 	}
 	return speechLibrarySettings(store, "Speech library directory updated."), nil
+}
+
+func (a *App) OpenSpeechLibraryDirectory() (UISpeechLibrarySettings, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	dir, err := store.ResolveSpeechLibraryDir()
+	if err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	if err := openFolder(dir); err != nil {
+		return UISpeechLibrarySettings{}, err
+	}
+	return speechLibrarySettings(store, "Speech library folder opened."), nil
 }
 
 func (a *App) ListSources() ([]UIVoiceSource, error) {
@@ -728,6 +760,28 @@ func speechLibraryDialogPath(store *storage.Store) string {
 		return settings.Path
 	}
 	return settings.DefaultPath
+}
+
+func openFolder(dir string) error {
+	switch goruntime.GOOS {
+	case "windows":
+		return startDetachedCommand("explorer.exe", dir)
+	case "darwin":
+		return startDetachedCommand("open", dir)
+	default:
+		return startDetachedCommand("xdg-open", dir)
+	}
+}
+
+func startDetachedCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("could not open folder: %w", err)
+	}
+	if cmd.Process == nil {
+		return nil
+	}
+	return cmd.Process.Release()
 }
 
 func speechLibraryFileName(req UISaveSpeechItemRequest, itemID string) string {

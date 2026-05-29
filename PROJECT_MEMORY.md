@@ -91,9 +91,9 @@ Prompt catalog note: the first 25 minimal prompts are preserved. Prompts 26-300 
 - Legacy samples that are silent or cannot be read are excluded from analysis and synthesis readiness, so they do not make a source look usable.
 - Preview renders WAV data URLs.
 - Export writes real `.mp3` files using the pure Go `github.com/braheezy/shine-mp3/pkg/mp3` encoder.
-- MP3 export folder is user-configurable. The persisted setting uses `path=""` for default; the UI shows `defaultPath` for the actual default `exports` directory. If the user selects or enters the actual default exports path, it is normalized back to the default setting.
+- MP3 export folder is user-configurable and can be opened from the app. The persisted setting uses `path=""` for default; the UI shows `defaultPath` for the actual default `exports` directory. If the user selects or enters the actual default exports path, it is normalized back to the default setting.
 - Speech library saving is separate from one-off MP3 export. `SaveSpeechItem` creates an MP3 from the current text/source/options and stores it under the speech library directory.
-- Speech library folder settings mirror the export-folder default behavior: the default is app data `speech-library`, persisted state keeps the default as `path=""`, and the UI receives both `defaultPath` and `resolvedPath`.
+- Speech library folder settings mirror the export-folder default behavior and can be opened from the app: the default is app data `speech-library`, persisted state keeps the default as `path=""`, and the UI receives both `defaultPath` and `resolvedPath`.
 - Export and speech library settings reject paths that resolve to the same physical directory, preventing exported files and saved playlist/library items from being mixed together.
 - `ListSpeechItems` returns metadata only. Audio data is loaded on demand through `GetSpeechItemAudio`, which returns `data:audio/mpeg;base64,...` for the selected saved item.
 - Speech library backend API methods are `GetSpeechLibrarySettings`, `SetSpeechLibraryDirectory`, `ChooseSpeechLibraryDirectory`, `ListSpeechItems`, `SaveSpeechItem`, `DeleteSpeechItem`, and `GetSpeechItemAudio`.
