@@ -21,6 +21,8 @@ Empty sources, sources with missing required samples, and sources whose required
 ## MVP Decisions
 
 - Use a compact Korean minimal sample set first, not all 11,172 Hangul syllables.
+- Voice sources/presets now have a recording type. The four types normalize `targetSamples` to 25, 100, 200, or 300 samples: inaccurate 25, fairly accurate 100, quite accurate 200, and very accurate 300.
+- Legacy/imported/arbitrary `targetSamples` values snap to the nearest supported recording type.
 - Treat the app as a cute syllable/jamo sampler, not accurate natural Korean TTS.
 - Store data locally under the user's app config directory in a `guvoice` folder.
 - Keep MVP metadata in JSON rather than SQLite.
@@ -45,7 +47,9 @@ Important UX rules:
 - Recording must happen inside guvoice. The Record tab uses browser/WebView2 `getUserMedia` + Web Audio API PCM capture; if there is no selected source, pressing Record creates one automatically before requesting microphone permission.
 - After saving a recording, the Record tab advances automatically to the next missing prompt.
 - The Record tab includes next missing, skip, and re-record controls to reduce click fatigue.
+- The Record tab prompt grid, status, and next prompt only show prompts up to the selected preset's target.
 - The Record tab now also has a sentence recording flow. Users can read a built-in Korean sentence pack or entered sentence through in-app `getUserMedia` recording, then review backend-extracted sample candidates before saving them.
+- The left `+` button and empty-state CTA now open preset/source management creation instead of jumping straight to the Record tab. The post-create flow still moves into recording.
 - The Speak tab includes a `보관함 저장` action that creates an MP3 from the current text, source, and options, then stores it in the app's speech library folder.
 - The `보관함` tab lists saved speech items with title, source, date, duration, and file path. Items can be deleted, and item audio is loaded lazily through `재생 준비` before rendering `<audio controls>`.
 - Avoid broad page-level inner scrolling on desktop. Keep the main tool surface fitted to the Wails window; only long source/sample/prompt lists should scroll.
@@ -77,6 +81,8 @@ Backend:
 
 Prosody note: spaces, commas, periods, `!`, `?`, and `~` are synthesis controls, not sample requirements. They add clamped pauses or adjust the previous prompt step's gain, speed, gap, and stretch while preserving the rule that empty or incomplete voice sources cannot generate speech.
 
+Prompt catalog note: the first 25 minimal prompts are preserved. Prompts 26-300 extend coverage with balanced exact syllable prompts, avoid duplicate minimal text, and include multiple initial consonants and practical medial vowels.
+
 ## Current Behavior
 
 - Recording and upload both pass through shared Web Audio processing, trim leading/trailing silence, and store mono 16-bit WAV.
@@ -93,10 +99,12 @@ Prosody note: spaces, commas, periods, `!`, `?`, and `~` are synthesis controls,
 - Speech library backend API methods are `GetSpeechLibrarySettings`, `SetSpeechLibraryDirectory`, `ChooseSpeechLibraryDirectory`, `ListSpeechItems`, `SaveSpeechItem`, `DeleteSpeechItem`, and `GetSpeechItemAudio`.
 - `SaveSpeechItem` applies nested options including speed, pitch, clarity, and noise reduction.
 - Sentence recording backend API methods are `ListSentencePrompts` and `ExtractSentenceSamples`.
+- Sentence extraction requests pass the selected preset's `targetSamples`.
 - Sentence extraction returns candidates with `id`, `promptId`, `label`, `text`, `timing`, `confidence`, `status`/`warning`, `audioName`, `audioUrl`, and `dataBase64`.
 - Sentence extraction is intentionally conservative: silent, near-silent, too-short, insufficient-speech, or one/two-sound recordings return `candidates=[]` so a source is not incorrectly filled.
 - Candidate playback/review is part of the workflow before saving. The frontend supports saving individual candidates and "save all usable candidates"; bulk save only includes candidates with ready/usable/good/ok/accepted status, `confidence >= 0.75`, and no warning. Review/warning candidates require individual listening and saving.
 - After a candidate save succeeds, a later refresh failure is still treated as save success to reduce duplicate-save retry risk.
+- For 100/200/300-sample recording types, analysis, synthesis, and sentence candidate extraction prefer exact syllable prompts inside the source target range when present. If no target-range exact prompt exists, they fall back to the existing representative consonant/vowel path.
 
 ## Current Limitations
 
@@ -121,7 +129,7 @@ git diff --check
 wails build
 ```
 
-Result during implementation verification: passed. A final parent-session verification may still continue separately if more work is added.
+Implementation verification passed: `go test ./...`, `npm run build`, `git diff --check`, and `wails build`.
 
 Go and Wails were installed locally for this workspace session:
 
@@ -153,7 +161,8 @@ MP3 encoding no longer depends on `ffmpeg`; it is handled by a bundled pure Go d
 ## Recommended Next Steps
 
 1. Run `wails dev` and manually check the recording queue, sentence recording with a real microphone, candidate playback/save, upload trim, export folder picker, speech library save/list/delete, and lazy playback in WebView2.
-2. Improve the sentence pack and candidate boundary quality, especially for Korean prompt coverage and natural read pacing.
-3. Investigate a more accurate free forced-alignment or ASR-assisted candidate path if it can stay local/practical.
-4. Add focused regression tests around export-folder default normalization if not already covered enough by storage/API tests.
-5. Continue improving DSP quality only within the sample-based product direction; do not weaken the rule that unusable sources cannot synthesize speech.
+2. Manually check 100/200/300 large-recording flows in a real WebView2 window, especially prompt-grid scrolling and recording fatigue.
+3. Improve 300-prompt ordering and the sentence pack/candidate boundary quality, especially for Korean prompt coverage and natural read pacing.
+4. Investigate a more accurate free forced-alignment or ASR-assisted candidate path if it can stay local/practical.
+5. Add focused regression tests around export-folder default normalization if not already covered enough by storage/API tests.
+6. Continue improving DSP quality only within the sample-based product direction; do not weaken the rule that unusable sources cannot synthesize speech.

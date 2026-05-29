@@ -9,17 +9,20 @@ guvoice is a Wails desktop tool for making short, playful Korean sample-based vo
 - The primary capture flow is direct recording.
 - Sentence recording is an assisted capture flow for proposing samples from a known Korean script, but it does not weaken the sample readiness rule.
 - The first usable voice mode is a small Korean minimal set, not all 11,172 Hangul syllables.
+- Voice sources/presets have a recording type. Supported target sizes are 25, 100, 200, and 300 samples.
 - Generated audio can be previewed and exported.
 - MP3 export location is configurable, but the app keeps a normalized default state for the built-in exports folder.
 - Generated MP3 speech can also be saved to an in-app speech library/playback list that remains separate from one-off MP3 exports.
 
 ## Minimal Sample Strategy
 
-The first mode uses a compact set so users can hear results quickly:
+The smallest mode uses a compact 25-sample set so users can hear results quickly:
 
 - Vowel-like syllables.
 - Representative consonant syllables.
 - Fallback prompt.
+
+Recording types normalize `targetSamples` to one of four sizes: inaccurate 25, fairly accurate 100, quite accurate 200, and very accurate 300. Legacy, import, and arbitrary values snap to the next supported type. The first 25 minimal prompts are unchanged; prompts 26-300 add balanced exact syllable prompts without duplicating minimal text, with broader choseong coverage and practical jungseong coverage.
 
 For each Hangul syllable, the app decomposes the character into choseong, jungseong, and jongseong, then chooses the best available sample:
 
@@ -28,14 +31,16 @@ For each Hangul syllable, the app decomposes the character into choseong, jungse
 3. Vowel sample.
 4. Fallback sample.
 
+For 100/200/300-sample sources, exact syllable prompts within the selected target range are preferred during analysis, synthesis, and sentence candidate extraction. If no in-range exact prompt exists, the existing representative consonant/vowel fallback path is used.
+
 The MVP keeps final consonants as a timing/pitch artifact rather than requiring full final-consonant recording.
 
 ## Core Screens
 
 - Speak: select a source, type text, check missing/unusable samples, preview, export, and save the current generated MP3 to the speech library with `보관함 저장`.
-- Record: record required samples with progress, automatic advance to the next missing prompt, next missing, skip, and re-record controls. It also supports sentence recording from a built-in Korean sentence pack or user-entered sentence, followed by candidate playback/review/save.
+- Record: record required samples with progress, automatic advance to the next missing prompt, next missing, skip, and re-record controls. Prompt grid/status/next prompt stop at the selected preset target. It also supports sentence recording from a built-in Korean sentence pack or user-entered sentence, followed by candidate playback/review/save.
 - Library (`보관함`): list saved speech items, show title/source/date/duration/file path, delete items, and lazily prepare item audio for `<audio controls>` playback.
-- Source Manager: upload samples, inspect coverage, duplicate/delete/export/import sources where supported.
+- Source Manager: create/manage presets, upload samples, inspect coverage, duplicate/delete/export/import sources where supported. The left `+` button and empty-state CTA route here for creation, then continue into recording after creation.
 - Export/settings controls: choose or reset the MP3 export folder and speech library folder.
 
 ## Implementation Notes
@@ -45,6 +50,7 @@ The MVP keeps final consonants as a timing/pitch artifact rather than requiring 
 - Recording and upload share frontend Web Audio helpers for decode/capture, leading/trailing silence trim, and mono 16-bit WAV encoding.
 - Sentence recording uses the same in-app microphone path. The backend receives the known script and WAV data, then extracts candidate samples with VAD/energy and script-proportional segmentation. This is a heuristic candidate extractor, not complete ASR or forced alignment.
 - Sentence recording Wails APIs are `ListSentencePrompts` and `ExtractSentenceSamples`.
+- Sentence extraction receives the selected preset's `targetSamples`.
 - Sentence candidates carry `id`, `promptId`, `label`, `text`, `timing`, `confidence`, `status`/`warning`, `audioName`, `audioUrl`, and `dataBase64`.
 - The extractor returns `candidates=[]` for silent, near-silent, too-short, insufficient-speech, or one/two-sound recordings so bad input cannot fill a source. Users are expected to play and inspect candidates before saving.
 - Candidate saving supports individual save and "save all usable candidates". Bulk save only includes ready/usable/good/ok/accepted candidates with `confidence >= 0.75` and no warning; review/warning candidates require individual save after listening.
@@ -92,12 +98,15 @@ The MVP keeps final consonants as a timing/pitch artifact rather than requiring 
 - Added speech library save/list/delete/lazy-playback UI and backend API.
 - Added speech library folder settings UI/API and same-physical-path rejection against the MP3 export directory.
 - Added sentence recording based candidate extraction with conservative empty/noisy/under-filled input rejection.
-- Implementation verification used and passed: `go test ./...`, `npm run build`, `git diff --check`, and `wails build`. Final parent verification may continue if more work lands afterward.
+- Added recording types with normalized 25/100/200/300 targets and expanded exact syllable prompt coverage through 300 prompts.
+- Updated recording creation/navigation so add/empty-state creation starts in preset management, while successful creation still moves to recording.
+- Implementation verification passed: `go test ./...`, `npm run build`, `git diff --check`, and `wails build`.
 
 ## Next Work
 
 1. Manually test `wails dev` with a real microphone for normal recording, sentence recording, candidate playback/save, upload trim, export/library folder selection, speech library save/delete, and lazy playback in WebView2.
-2. Improve the Korean sentence pack and candidate boundary quality.
-3. Research a more accurate free forced-alignment or ASR-assisted candidate path if it can stay practical for the app.
-4. Add/expand focused tests for export-folder default normalization if coverage is thin.
-5. Continue incremental DSP polish while preserving the "no usable samples, no speech" product rule.
+2. Manually check real WebView2 behavior for 100/200/300 large-recording UI scrolling and recording fatigue.
+3. Improve 300-prompt ordering, the Korean sentence pack, and candidate boundary quality.
+4. Research a more accurate free forced-alignment or ASR-assisted candidate path if it can stay practical for the app.
+5. Add/expand focused tests for export-folder default normalization if coverage is thin.
+6. Continue incremental DSP polish while preserving the "no usable samples, no speech" product rule.

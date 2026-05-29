@@ -7,6 +7,7 @@ The core product rule is strict: an empty source, an incomplete source, or a sou
 ## Current Features
 
 - Create, edit, and delete voice sources.
+- Choose a recording type per source/preset: inaccurate 25, fairly accurate 100, quite accurate 200, or very accurate 300 samples.
 - Track required sample coverage per source.
 - Record samples directly in the app with WebView2/browser microphone capture.
 - After saving a recording, automatically advance to the next missing prompt.
@@ -41,7 +42,9 @@ Synthesis maps input text to prompt IDs, loads the matching usable WAV samples, 
 
 Saving to the speech library uses the same source readiness rule and synthesis options as MP3 export, including nested speed, pitch, clarity, and noise reduction settings. Library listings return metadata first, and each item's MP3 data is loaded only when playback is requested.
 
-Sentence recording is still sample-based. The Record tab captures the user reading a known Korean sentence through `getUserMedia`, then the backend uses the known script to propose sample candidates. This is not full ASR or forced alignment; it is VAD/energy plus script-proportional segmentation, so candidates are meant to be played back and checked before saving.
+Voice source recording targets are normalized to 25, 100, 200, or 300 samples, including legacy/imported values. The first 25 minimal prompts stay stable, while prompts 26-300 add balanced exact syllable coverage without duplicating the minimal prompt text. For 100/200/300-sample presets, exact syllable prompts inside the selected target range are preferred for analysis, synthesis, and sentence candidate extraction; otherwise the app falls back to representative consonant/vowel samples.
+
+Sentence recording is still sample-based. The Record tab captures the user reading a known Korean sentence through `getUserMedia`, then the backend uses the known script and selected preset target to propose sample candidates. This is not full ASR or forced alignment; it is VAD/energy plus script-proportional segmentation, so candidates are meant to be played back and checked before saving.
 
 The extractor is conservative. Silent, near-silent, too-short, under-filled, or one/two-sound recordings return no candidates instead of filling a source with bad data. Candidate records include `id`, `promptId`, `label`, `text`, `timing`, `confidence`, `status`/`warning`, `audioName`, `audioUrl`, and `dataBase64`. Bulk save only includes candidates that are ready/usable/good/ok/accepted, have `confidence >= 0.75`, and have no warning; review/warning candidates are saved individually after listening.
 
@@ -91,7 +94,7 @@ wails doctor
 wails build
 ```
 
-The current sentence-extraction implementation was checked with:
+The current recording-type and sentence-extraction work has been checked with:
 
 ```powershell
 go test ./...
@@ -106,7 +109,9 @@ wails build
 
 - The app is not natural Korean TTS. It is a compact Korean sample mapper and concatenative renderer.
 - Sentence recording is a heuristic candidate extractor, not an ASR/forced-alignment system; candidate timing quality depends on the recording and script match.
-- The first voice mode uses a minimal prompt set, not all Hangul syllables.
+- The voice modes use 25/100/200/300 prompt targets, not all Hangul syllables.
+- 100/200/300 prompt flows still need real WebView2 manual checks for large-list scrolling and recording fatigue.
+- 300-prompt ordering and the sentence pack can be improved further.
 - Current audio quality depends heavily on the recorded/uploaded samples.
 - Pitch, clarity, and noise reduction are simple PCM DSP approximations.
 - Clarity is intentionally stylized: low clarity uses low-pass/smoothing for a muffled sound, while high clarity uses high/transient emphasis and normalization for clearer articulation boundaries.

@@ -154,7 +154,8 @@ func (a *App) checkMissingSamples(req model.CheckMissingSamplesRequest) (model.M
 	}
 	analysis := analyzeKoreanText(req.Text)
 	samples := usableSamplesOnDisk(store, store.ListSamples(sourceID))
-	return buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, source.TargetSamples), nil
+	targetSamples := normalizeTarget(source.TargetSamples)
+	return buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, targetSamples), nil
 }
 
 func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResult, error) {
@@ -175,8 +176,9 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 	if err != nil {
 		return model.SynthesisResult{}, err
 	}
+	targetSamples := normalizeTarget(source.TargetSamples)
 	samples := usableSamplesOnDisk(store, store.ListSamples(sourceID))
-	missingRequired := missingRequiredPromptIDs(source.TargetSamples, samples)
+	missingRequired := missingRequiredPromptIDs(targetSamples, samples)
 	if len(missingRequired) > 0 {
 		return model.SynthesisResult{}, fmt.Errorf("필수 WAV 샘플이 부족합니다: %s", strings.Join(missingRequired, ", "))
 	}
@@ -220,7 +222,7 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		manifestPath = ""
 	}
 
-	steps, usedPromptIDs := sequenceForText(req.Text)
+	steps, usedPromptIDs := sequenceForTextWithTarget(req.Text, targetSamples)
 	latestSamples := latestUsableSamplesByPrompt(samples)
 	missingUsed := []string{}
 	for index := range steps {
@@ -238,7 +240,7 @@ func (a *App) synthesizeToFile(req model.SynthesisRequest) (model.SynthesisResul
 		return model.SynthesisResult{}, fmt.Errorf("입력 텍스트에 필요한 WAV 샘플이 없습니다: %s", strings.Join(missingUsed, ", "))
 	}
 
-	missing := buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, source.TargetSamples)
+	missing := buildPromptMissingSampleReport(sourceID, req.Text, analysis, samples, targetSamples)
 
 	options := synth.Options{
 		SampleRate:     req.SampleRate,
@@ -420,6 +422,7 @@ func analyzeKoreanText(text string) model.TextAnalysis {
 }
 
 func buildPromptMissingSampleReport(sourceID string, text string, analysis model.TextAnalysis, samples []model.Sample, target int) model.MissingSampleReport {
+	target = normalizeTarget(target)
 	filled := filledUsablePromptIDs(samples)
 	latest := latestUsableSamplesByPrompt(samples)
 	missingIDs := map[string]bool{}
@@ -430,7 +433,7 @@ func buildPromptMissingSampleReport(sourceID string, text string, analysis model
 		}
 	}
 
-	_, usedPromptIDs := sequenceForText(text)
+	_, usedPromptIDs := sequenceForTextWithTarget(text, target)
 	report := model.MissingSampleReport{
 		SourceID:                sourceID,
 		Text:                    text,

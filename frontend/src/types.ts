@@ -113,6 +113,12 @@ export interface SamplePrompt {
   text: string;
 }
 
+export interface SampleTargetOption {
+  value: number;
+  label: string;
+  description: string;
+}
+
 export interface SentencePrompt {
   id: string;
   title: string;
@@ -125,6 +131,7 @@ export interface SentencePrompt {
 export interface SentenceExtractionInput {
   promptId?: string;
   sentencePromptId?: string;
+  targetSamples?: number;
   text: string;
   audioName: string;
   dataBase64?: string;
@@ -158,7 +165,15 @@ export interface SentenceExtractionResult {
   warnings?: string[];
 }
 
-export const SAMPLE_PROMPTS: SamplePrompt[] = [
+const HANGUL_BASE = 0xac00;
+const HANGUL_CHOSEONG_COUNT = 19;
+const HANGUL_JUNGSEONG_COUNT = 21;
+const HANGUL_JONGSEONG_COUNT = 28;
+const MAX_GENERATED_SAMPLE_TARGET = 300;
+const BALANCED_JUNGSEONG_ORDER = [0, 4, 1, 5, 8, 13, 18, 20, 2, 6, 12, 17, 9, 14, 11, 16, 3, 7, 10, 15, 19];
+const COMMON_FINAL_CONSONANT_ORDER = [4, 21, 8, 16, 1, 17, 7, 19, 20, 22, 27];
+
+const guvoiceMinimalPromptCatalog: SamplePrompt[] = [
   { id: "vowel-a", label: "모음 아", text: "아" },
   { id: "vowel-eo", label: "모음 어", text: "어" },
   { id: "vowel-o", label: "모음 오", text: "오" },
@@ -183,12 +198,101 @@ export const SAMPLE_PROMPTS: SamplePrompt[] = [
   { id: "rep-ka", label: "대표음 카", text: "카" },
   { id: "rep-ta", label: "대표음 타", text: "타" },
   { id: "rep-pa", label: "대표음 파", text: "파" },
-  { id: "rep-ha", label: "대표음 하", text: "하" },
-  { id: "tone-soft", label: "부드러운 톤", text: "오늘은 맑고 차분하게 말합니다." },
-  { id: "tone-fast", label: "빠른 톤", text: "작은 소리도 또렷하게 읽어 보겠습니다." },
-  { id: "tone-question", label: "질문 톤", text: "이 설정으로 미리듣기를 만들어 볼까요?" }
+  { id: "rep-ha", label: "대표음 하", text: "하" }
 ];
 
-export const MIN_SAMPLE_TARGET = Math.min(25, SAMPLE_PROMPTS.length);
-export const MAX_SAMPLE_TARGET = SAMPLE_PROMPTS.length;
+const composeHangulSyllable = (choseongIndex: number, jungseongIndex: number, jongseongIndex: number) =>
+  HANGUL_BASE + ((choseongIndex * HANGUL_JUNGSEONG_COUNT + jungseongIndex) * HANGUL_JONGSEONG_COUNT + jongseongIndex);
+
+const syllablePromptId = (codePoint: number) =>
+  `syllable-${codePoint.toString(16).toUpperCase().padStart(4, "0")}`;
+
+const appendExactSyllablePrompt = (
+  catalog: SamplePrompt[],
+  minimalPromptTexts: Set<string>,
+  choseongIndex: number,
+  jungseongIndex: number,
+  jongseongIndex: number
+) => {
+  if (catalog.length >= MAX_GENERATED_SAMPLE_TARGET) {
+    return;
+  }
+  const codePoint = composeHangulSyllable(choseongIndex, jungseongIndex, jongseongIndex);
+  const text = String.fromCodePoint(codePoint);
+  if (minimalPromptTexts.has(text)) {
+    return;
+  }
+  catalog.push({
+    id: syllablePromptId(codePoint),
+    label: `\uC815\uD655 \uC74C\uC808 ${text}`,
+    text
+  });
+};
+
+const buildGuvoicePromptCatalog = (): SamplePrompt[] => {
+  const catalog = [...guvoiceMinimalPromptCatalog];
+  const minimalPromptTexts = new Set(guvoiceMinimalPromptCatalog.map((prompt) => prompt.text));
+
+  for (const jungseongIndex of BALANCED_JUNGSEONG_ORDER) {
+    for (let choseongIndex = 0; choseongIndex < HANGUL_CHOSEONG_COUNT; choseongIndex += 1) {
+      appendExactSyllablePrompt(catalog, minimalPromptTexts, choseongIndex, jungseongIndex, 0);
+      if (catalog.length >= MAX_GENERATED_SAMPLE_TARGET) {
+        return catalog;
+      }
+    }
+  }
+
+  for (const jongseongIndex of COMMON_FINAL_CONSONANT_ORDER) {
+    for (const jungseongIndex of BALANCED_JUNGSEONG_ORDER) {
+      for (let choseongIndex = 0; choseongIndex < HANGUL_CHOSEONG_COUNT; choseongIndex += 1) {
+        appendExactSyllablePrompt(catalog, minimalPromptTexts, choseongIndex, jungseongIndex, jongseongIndex);
+        if (catalog.length >= MAX_GENERATED_SAMPLE_TARGET) {
+          return catalog;
+        }
+      }
+    }
+  }
+  return catalog;
+};
+
+export const SAMPLE_PROMPTS: SamplePrompt[] = buildGuvoicePromptCatalog();
+
+export const SAMPLE_TARGET_OPTIONS: SampleTargetOption[] = [
+  {
+    value: 25,
+    label: "부정확",
+    description: "25개, 지금 같은 작은 소스로 빠르게 시험합니다."
+  },
+  {
+    value: 100,
+    label: "나름 정확",
+    description: "100개, 자주 쓰는 정확 음절을 더 녹음합니다."
+  },
+  {
+    value: 200,
+    label: "꽤 정확",
+    description: "200개, 더 넓은 음절을 커버합니다."
+  },
+  {
+    value: 300,
+    label: "아주 정확함",
+    description: "300개, 현재 프리셋에서 가장 촘촘하게 녹음합니다."
+  }
+];
+
+export const MIN_SAMPLE_TARGET = 25;
+export const MAX_SAMPLE_TARGET = MAX_GENERATED_SAMPLE_TARGET;
 export const MIN_PREVIEW_SAMPLES = Math.min(3, SAMPLE_PROMPTS.length);
+
+export const normalizeTargetSamples = (value?: number) => {
+  const fallback = SAMPLE_TARGET_OPTIONS[0]?.value ?? MIN_SAMPLE_TARGET;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return (
+    SAMPLE_TARGET_OPTIONS.find((option) => numeric <= option.value)?.value ??
+    SAMPLE_TARGET_OPTIONS[SAMPLE_TARGET_OPTIONS.length - 1]?.value ??
+    MAX_SAMPLE_TARGET
+  );
+};

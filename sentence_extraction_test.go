@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"guvoice/internal/hangul"
 	"guvoice/internal/synth"
 )
 
@@ -139,6 +140,33 @@ func TestExtractSentenceSamplesReturnsNoCandidatesForTooShortVoicedWAV(t *testin
 	}
 	if len(result.Warnings) == 0 {
 		t.Fatal("too-short voiced WAV should return a warning")
+	}
+}
+
+func TestExtractSentenceSamplesUsesTargetAwareExactPrompt(t *testing.T) {
+	app := &App{}
+	exactText := "\uAC1C"
+	exactID := hangul.SyllablePromptID('\uAC1C')
+	pcm := make([]int16, 0, 3200)
+	pcm = append(pcm, make([]int16, 400)...)
+	pcm = append(pcm, syntheticTone(8000, 220, 440)...)
+	pcm = append(pcm, make([]int16, 400)...)
+
+	result, err := app.ExtractSentenceSamples(UISentenceExtractionRequest{
+		Text:          exactText,
+		TargetSamples: 100,
+		AudioName:     "exact-syllable.wav",
+		DataBase64:    wavDataURLFromPCM(t, 8000, pcm),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TotalCandidates != 1 || len(result.Candidates) != 1 {
+		t.Fatalf("expected one exact prompt candidate, got %#v", result)
+	}
+	candidate := result.Candidates[0]
+	if candidate.PromptID != exactID || candidate.Text != exactText {
+		t.Fatalf("expected exact prompt %s for %q, got %#v", exactID, exactText, candidate)
 	}
 }
 

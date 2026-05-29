@@ -45,6 +45,7 @@ type UISentenceExtractionRequest struct {
 	PromptID         string `json:"promptId,omitempty"`
 	SentencePromptID string `json:"sentencePromptId,omitempty"`
 	Text             string `json:"text,omitempty"`
+	TargetSamples    int    `json:"targetSamples,omitempty"`
 	AudioName        string `json:"audioName,omitempty"`
 	AudioURL         string `json:"audioUrl,omitempty"`
 	DataBase64       string `json:"dataBase64,omitempty"`
@@ -821,7 +822,8 @@ func sourceToUI(source model.VoiceSource, samples []model.Sample) UIVoiceSource 
 }
 
 func analyzeSourceCoverage(source model.VoiceSource, samples []model.Sample, text string) UIAnalysisResult {
-	requiredPrompts := requiredPromptDefinitions(source.TargetSamples)
+	targetSamples := normalizeTarget(source.TargetSamples)
+	requiredPrompts := requiredPromptDefinitions(targetSamples)
 	target := len(requiredPrompts)
 	filledIDs := filledUsablePromptIDs(samples)
 	matched := 0
@@ -863,7 +865,7 @@ func analyzeSourceCoverage(source model.VoiceSource, samples []model.Sample, tex
 		})
 	}
 
-	_, usedPromptIDs := sequenceForText(text)
+	_, usedPromptIDs := sequenceForTextWithTarget(text, targetSamples)
 	for _, promptID := range usedPromptIDs {
 		if filledIDs[promptID] || reportedMissing[promptID] {
 			continue
@@ -905,17 +907,35 @@ func sampleLabel(sample model.Sample) string {
 }
 
 func normalizeTarget(value int) int {
-	maxTarget := len(guvoicePromptCatalog)
+	maxTarget := maxTargetSamples
+	if len(guvoicePromptCatalog) < maxTarget {
+		maxTarget = len(guvoicePromptCatalog)
+	}
 	if maxTarget <= 0 {
 		maxTarget = defaultTargetSamples
 	}
-	if value <= 0 {
-		value = defaultTargetSamples
+
+	desired := defaultTargetSamples
+	switch {
+	case value <= 25:
+		desired = 25
+	case value <= 100:
+		desired = 100
+	case value <= 200:
+		desired = 200
+	default:
+		desired = 300
 	}
-	if value > maxTarget {
-		return maxTarget
+
+	if desired <= maxTarget {
+		return desired
 	}
-	return value
+	for _, candidate := range []int{300, 200, 100, 25} {
+		if candidate <= maxTarget {
+			return candidate
+		}
+	}
+	return maxTarget
 }
 
 func formatUITime(value time.Time) string {

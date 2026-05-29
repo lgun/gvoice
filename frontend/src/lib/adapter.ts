@@ -2,12 +2,12 @@ import {
   AnalysisResult,
   EngineStatus,
   ExportResult,
-  MAX_SAMPLE_TARGET,
   MIN_SAMPLE_TARGET,
   MissingSample,
   OutputDirectorySettings,
   PreviewResult,
   SAMPLE_PROMPTS,
+  SAMPLE_TARGET_OPTIONS,
   SaveSpeechItemInput,
   SentenceExtractionInput,
   SentenceExtractionResult,
@@ -17,7 +17,8 @@ import {
   SpeechLibrarySettings,
   SynthesisRequest,
   VoiceSample,
-  VoiceSource
+  VoiceSource,
+  normalizeTargetSamples
 } from "../types";
 
 type CreateSourceInput = Partial<
@@ -165,6 +166,7 @@ const STORAGE_KEY = "guvoice.sources.v3";
 const OUTPUT_DIRECTORY_KEY = "guvoice.outputDirectory.v1";
 const SPEECH_LIBRARY_KEY = "guvoice.speechLibrary.items.v1";
 const SPEECH_LIBRARY_DIRECTORY_KEY = "guvoice.speechLibrary.directory.v1";
+const DEFAULT_SAMPLE_TARGET = SAMPLE_TARGET_OPTIONS[0]?.value ?? MIN_SAMPLE_TARGET;
 
 const DEMO_SENTENCE_PROMPTS: SentencePrompt[] = [
   {
@@ -196,9 +198,6 @@ const wailsApp = () => window.go?.main?.App;
 
 const hasWails = () => Boolean(wailsApp());
 
-const clampTargetSamples = (value?: number) =>
-  Math.min(MAX_SAMPLE_TARGET, Math.max(MIN_SAMPLE_TARGET, value || MIN_SAMPLE_TARGET));
-
 const seedSources = (): VoiceSource[] => {
   const createdAt = nowIso();
   return [
@@ -207,10 +206,10 @@ const seedSources = (): VoiceSource[] => {
       name: "데모 목소리",
       speaker: "구보이스",
       note: "브라우저 fallback 샘플",
-      targetSamples: MIN_SAMPLE_TARGET,
+      targetSamples: DEFAULT_SAMPLE_TARGET,
       createdAt,
       updatedAt: createdAt,
-      samples: SAMPLE_PROMPTS.slice(0, MIN_SAMPLE_TARGET).map((prompt, index) => ({
+      samples: SAMPLE_PROMPTS.slice(0, DEFAULT_SAMPLE_TARGET).map((prompt, index) => ({
         id: `sample-demo-${index + 1}`,
         promptId: prompt.id,
         label: prompt.label,
@@ -249,7 +248,7 @@ const normalizeSource = (source: VoiceSource): VoiceSource => ({
   speaker: source.speaker || "이름 없음",
   note: source.note || "",
   samples: Array.isArray(source.samples) ? source.samples : [],
-  targetSamples: clampTargetSamples(source.targetSamples)
+  targetSamples: normalizeTargetSamples(source.targetSamples)
 });
 
 const normalizeOutputDirectory = (
@@ -551,7 +550,7 @@ const extractTokens = (text: string) => {
 
 const analyzeFromSamples = (source: VoiceSource, text: string): AnalysisResult => {
   const requiredTokens = extractTokens(text);
-  const target = clampTargetSamples(source.targetSamples);
+  const target = normalizeTargetSamples(source.targetSamples);
   const requiredPrompts = SAMPLE_PROMPTS.slice(0, target);
   const filledPromptIds = new Set(source.samples.map((sample) => sample.promptId ?? sample.label));
   const missingPrompts = requiredPrompts.filter((prompt) => !filledPromptIds.has(prompt.id));
@@ -648,7 +647,7 @@ const fallbackApi = {
       name: input.name?.trim() || "새 목소리",
       speaker: input.speaker?.trim() || "이름 없음",
       note: input.note?.trim() || "",
-      targetSamples: clampTargetSamples(input.targetSamples),
+      targetSamples: normalizeTargetSamples(input.targetSamples),
       samples: [],
       createdAt,
       updatedAt: createdAt
@@ -815,10 +814,12 @@ const fallbackApi = {
     const promptPack =
       DEMO_SENTENCE_PROMPTS.find((prompt) => prompt.id === (input.sentencePromptId || input.promptId)) ??
       DEMO_SENTENCE_PROMPTS[0];
-    const promptIds = (promptPack.promptIds?.length ? promptPack.promptIds : SAMPLE_PROMPTS.map((prompt) => prompt.id)).slice(
-      0,
-      8
+    const target = normalizeTargetSamples(input.targetSamples);
+    const requiredPromptIds = new Set(SAMPLE_PROMPTS.slice(0, target).map((prompt) => prompt.id));
+    const packPromptIds = (promptPack.promptIds?.length ? promptPack.promptIds : SAMPLE_PROMPTS.map((prompt) => prompt.id)).filter(
+      (promptId) => requiredPromptIds.has(promptId)
     );
+    const promptIds = (packPromptIds.length ? packPromptIds : Array.from(requiredPromptIds)).slice(0, 8);
     const candidates = promptIds.map((promptId, index) => {
       const prompt = promptById(promptId) ?? SAMPLE_PROMPTS[index % SAMPLE_PROMPTS.length];
       const duration = Math.min(0.9, Math.max(0.28, prompt.text.length * 0.08));
@@ -877,11 +878,26 @@ export const voiceApi = {
       sources.map(normalizeSource)
     ),
 
-  createSource: (input: CreateSourceInput) =>
-    callWails("CreateSource", () => fallbackApi.createSource(input), input),
+  createSource: (input: CreateSourceInput) => {
+    const normalizedInput = {
+      ...input,
+      targetSamples: normalizeTargetSamples(input.targetSamples)
+    };
+    return callWails("CreateSource", () => fallbackApi.createSource(normalizedInput), normalizedInput).then(normalizeSource);
+  },
 
-  updateSource: (id: string, patch: Partial<VoiceSource>) =>
-    callWails("UpdateSource", () => fallbackApi.updateSource(id, patch), id, patch),
+  updateSource: (id: string, patch: Partial<VoiceSource>) => {
+    const normalizedPatch =
+      patch.targetSamples === undefined
+        ? patch
+        : {
+            ...patch,
+            targetSamples: normalizeTargetSamples(patch.targetSamples)
+          };
+    return callWails("UpdateSource", () => fallbackApi.updateSource(id, normalizedPatch), id, normalizedPatch).then(
+      normalizeSource
+    );
+  },
 
   deleteSource: (id: string) =>
     callWails("DeleteSource", () => fallbackApi.deleteSource(id), id),
@@ -959,8 +975,13 @@ export const voiceApi = {
       (Array.isArray(prompts) ? prompts : DEMO_SENTENCE_PROMPTS).map(normalizeSentencePrompt)
     ),
 
-  extractSentenceSamples: (input: SentenceExtractionInput) =>
-    callWails("ExtractSentenceSamples", () => fallbackApi.extractSentenceSamples(input), input).then(
+  extractSentenceSamples: (input: SentenceExtractionInput) => {
+    const normalizedInput = {
+      ...input,
+      targetSamples: normalizeTargetSamples(input.targetSamples)
+    };
+    return callWails("ExtractSentenceSamples", () => fallbackApi.extractSentenceSamples(normalizedInput), normalizedInput).then(
       normalizeSentenceResult
-    )
+    );
+  }
 };

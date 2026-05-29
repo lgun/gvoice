@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"guvoice/internal/hangul"
 	"guvoice/internal/model"
 	"guvoice/internal/storage"
 	"guvoice/internal/synth"
@@ -487,6 +488,96 @@ func TestAnalyzeTextReportsInputPromptMissing(t *testing.T) {
 	}
 }
 
+func TestAnalyzeTextUsesTargetAwareExactSyllables(t *testing.T) {
+	exactID := hangul.SyllablePromptID('개')
+
+	legacyStore, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySource, err := legacyStore.CreateVoiceSource(model.CreateVoiceSourceRequest{
+		Name:          "legacy target",
+		TargetSamples: 25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fillRequiredSamplesForTest(t, legacyStore, legacySource, 220)
+	legacyReport, err := (&App{store: legacyStore}).AnalyzeText(legacySource.ID, "개")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsMissingPrompt(legacyReport, exactID) {
+		t.Fatalf("target 25 should not require exact syllable %s, got %#v", exactID, legacyReport.Missing)
+	}
+
+	exactStore, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactSource, err := exactStore.CreateVoiceSource(model.CreateVoiceSourceRequest{
+		Name:          "exact target",
+		TargetSamples: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, prompt := range requiredPromptDefinitions(exactSource.TargetSamples) {
+		if prompt.ID == exactID {
+			continue
+		}
+		_, err := exactStore.SaveSample(model.SaveSampleRequest{
+			SourceID:       exactSource.ID,
+			PromptID:       prompt.ID,
+			FileName:       prompt.ID + ".wav",
+			DataBase64:     testWAVDataURL(t, 240+index*5),
+			Transcript:     prompt.Text,
+			DurationMillis: 120,
+		})
+		if err != nil {
+			t.Fatalf("save sample %s: %v", prompt.ID, err)
+		}
+	}
+	exactReport, err := (&App{store: exactStore}).AnalyzeText(exactSource.ID, "개")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsMissingPrompt(exactReport, exactID) {
+		t.Fatalf("target 100 should report missing exact syllable %s, got %#v", exactID, exactReport.Missing)
+	}
+}
+
+func TestSynthesizeToFileUsesTargetAwareExactSyllables(t *testing.T) {
+	store, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.CreateVoiceSource(model.CreateVoiceSourceRequest{
+		Name:          "exact synthesis",
+		TargetSamples: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fillRequiredSamplesForTest(t, store, source, 260)
+	exactID := hangul.SyllablePromptID('개')
+
+	result, err := (&App{store: store}).synthesizeToFile(model.SynthesisRequest{
+		SourceID:   source.ID,
+		Text:       "개",
+		Format:     "wav",
+		OutputName: "target-aware-exact",
+		SampleRate: 8000,
+		Speed:      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Message, exactID) {
+		t.Fatalf("expected synthesis to use exact prompt %s, got message %q", exactID, result.Message)
+	}
+}
+
 func TestAddSampleRejectsNonWAVUpload(t *testing.T) {
 	store, err := storage.Open(t.TempDir())
 	if err != nil {
@@ -516,22 +607,197 @@ func TestAddSampleRejectsNonWAVUpload(t *testing.T) {
 	}
 }
 
-func TestTargetSamplesClampToPromptCatalog(t *testing.T) {
-	if normalizeTarget(len(guvoicePromptCatalog)+20) != len(guvoicePromptCatalog) {
-		t.Fatalf("expected target clamp to catalog length %d", len(guvoicePromptCatalog))
+func TestRequiredPromptDefinitionsSupportPresetTargets(t *testing.T) {
+	for _, target := range []int{25, 100, 200, 300} {
+		if got := len(requiredPromptDefinitions(target)); got != target {
+			t.Fatalf("expected %d required prompts, got %d", target, got)
+		}
+	}
+}
+
+func TestFirstTwentyFivePromptIDsRemainStable(t *testing.T) {
+	expected := []string{
+		"vowel-a",
+		"vowel-eo",
+		"vowel-o",
+		"vowel-u",
+		"vowel-eu",
+		"vowel-i",
+		"vowel-ae",
+		"vowel-e",
+		"vowel-ya",
+		"vowel-yeo",
+		"vowel-yo",
+		"vowel-yu",
+		"rep-ga",
+		"rep-na",
+		"rep-da",
+		"rep-ra",
+		"rep-ma",
+		"rep-ba",
+		"rep-sa",
+		"rep-ja",
+		"rep-cha",
+		"rep-ka",
+		"rep-ta",
+		"rep-pa",
+		"rep-ha",
+	}
+	expectedTexts := []string{
+		"\uC544",
+		"\uC5B4",
+		"\uC624",
+		"\uC6B0",
+		"\uC73C",
+		"\uC774",
+		"\uC560",
+		"\uC5D0",
+		"\uC57C",
+		"\uC5EC",
+		"\uC694",
+		"\uC720",
+		"\uAC00",
+		"\uB098",
+		"\uB2E4",
+		"\uB77C",
+		"\uB9C8",
+		"\uBC14",
+		"\uC0AC",
+		"\uC790",
+		"\uCC28",
+		"\uCE74",
+		"\uD0C0",
+		"\uD30C",
+		"\uD558",
+	}
+	prompts := requiredPromptDefinitions(25)
+	if len(prompts) != len(expected) {
+		t.Fatalf("expected %d minimal prompts, got %d", len(expected), len(prompts))
+	}
+	for index, prompt := range prompts {
+		if prompt.ID != expected[index] {
+			t.Fatalf("prompt %d changed: expected %s, got %s", index, expected[index], prompt.ID)
+		}
+		if prompt.Text != expectedTexts[index] {
+			t.Fatalf("prompt %d text changed: expected %q, got %q", index, expectedTexts[index], prompt.Text)
+		}
+	}
+}
+
+func TestGeneratedExactSyllablePromptsStartAfterMinimalSet(t *testing.T) {
+	prompts := requiredPromptDefinitions(300)
+	if len(prompts) != 300 {
+		t.Fatalf("expected 300 prompts, got %d", len(prompts))
+	}
+	for index, prompt := range prompts[25:] {
+		runes := []rune(prompt.Text)
+		if len(runes) != 1 {
+			t.Fatalf("prompt %d should be a single exact syllable, got %#v", index+25, prompt)
+		}
+		if prompt.ID != hangul.SyllablePromptID(runes[0]) {
+			t.Fatalf("prompt %d should use syllable id for %q, got %s", index+25, prompt.Text, prompt.ID)
+		}
+	}
+}
+
+func TestGeneratedExactSyllablePromptsDoNotDuplicateMinimalTexts(t *testing.T) {
+	prompts := requiredPromptDefinitions(300)
+	minimalTexts := map[string]bool{}
+	for _, prompt := range prompts[:25] {
+		minimalTexts[prompt.Text] = true
+	}
+	seenExactTexts := map[string]bool{}
+	for index, prompt := range prompts[25:] {
+		if minimalTexts[prompt.Text] {
+			t.Fatalf("exact prompt %d duplicates minimal text %q", index+25, prompt.Text)
+		}
+		if seenExactTexts[prompt.Text] {
+			t.Fatalf("exact prompt %d duplicates earlier exact text %q", index+25, prompt.Text)
+		}
+		seenExactTexts[prompt.Text] = true
+	}
+}
+
+func TestGeneratedExactSyllablePromptsAreBalancedAcrossChoseong(t *testing.T) {
+	prompts := requiredPromptDefinitions(100)
+	choseongSeen := map[int]bool{}
+	for _, prompt := range prompts[25:] {
+		runes := []rune(prompt.Text)
+		if len(runes) != 1 {
+			t.Fatalf("exact prompt should be a single syllable, got %#v", prompt)
+		}
+		parts, ok := hangul.DecomposeRune(runes[0])
+		if !ok {
+			t.Fatalf("exact prompt should be Hangul, got %#v", prompt)
+		}
+		choseongSeen[parts.ChoseongIndex] = true
+	}
+	if len(choseongSeen) < 15 {
+		t.Fatalf("expected target 100 exact prompts to cover many choseong, got %d: %#v", len(choseongSeen), choseongSeen)
+	}
+	for _, requiredIndex := range []int{0, 2, 3, 6, 9, 18} {
+		if !choseongSeen[requiredIndex] {
+			t.Fatalf("expected target 100 exact prompts to include choseong index %d, got %#v", requiredIndex, choseongSeen)
+		}
+	}
+}
+
+func TestGaeRemainsExactPromptAtTarget100(t *testing.T) {
+	exactText := "\uAC1C"
+	exactRune := []rune(exactText)[0]
+	exactID := hangul.SyllablePromptID(exactRune)
+	prompts := requiredPromptDefinitions(100)
+	for _, prompt := range prompts {
+		if prompt.ID == exactID && prompt.Text == exactText {
+			return
+		}
+	}
+	t.Fatalf("expected %s (%s) to be included in target 100 exact prompts", exactText, exactID)
+}
+
+func TestSequenceForTextWithTargetPrefersExactSyllableWithinTarget(t *testing.T) {
+	legacySteps, _ := sequenceForTextWithTarget("개", 25)
+	if len(legacySteps) != 1 || legacySteps[0].PromptID != "rep-ga" {
+		t.Fatalf("target 25 should keep fallback prompt for 개, got %#v", legacySteps)
+	}
+
+	exactID := hangul.SyllablePromptID('개')
+	exactSteps, _ := sequenceForTextWithTarget("개", 100)
+	if len(exactSteps) != 1 || exactSteps[0].PromptID != exactID {
+		t.Fatalf("target 100 should use exact syllable %s for 개, got %#v", exactID, exactSteps)
+	}
+}
+
+func TestTargetSamplesClampToMaxRequiredTarget(t *testing.T) {
+	cases := []struct {
+		value int
+		want  int
+	}{
+		{value: 0, want: 25},
+		{value: 1, want: 25},
+		{value: 28, want: 100},
+		{value: 80, want: 100},
+		{value: 150, want: 200},
+		{value: 250, want: 300},
+		{value: 999, want: 300},
+	}
+	for _, tc := range cases {
+		if got := normalizeTarget(tc.value); got != tc.want {
+			t.Fatalf("normalizeTarget(%d) = %d, want %d", tc.value, got, tc.want)
+		}
 	}
 
 	source := model.VoiceSource{
 		ID:            "voice-over-target",
 		Name:          "over target",
-		TargetSamples: 80,
+		TargetSamples: 999,
 	}
 	ui := sourceToUI(source, nil)
-	if ui.TargetSamples != len(guvoicePromptCatalog) {
-		t.Fatalf("expected UI target %d, got %d", len(guvoicePromptCatalog), ui.TargetSamples)
+	if ui.TargetSamples != maxTargetSamples {
+		t.Fatalf("expected UI target %d, got %d", maxTargetSamples, ui.TargetSamples)
 	}
-	if got := len(requiredPromptDefinitions(80)); got != len(guvoicePromptCatalog) {
-		t.Fatalf("expected required prompts to clamp to catalog length, got %d", got)
+	if got := len(requiredPromptDefinitions(999)); got != maxTargetSamples {
+		t.Fatalf("expected required prompts to clamp to %d, got %d", maxTargetSamples, got)
 	}
 }
 

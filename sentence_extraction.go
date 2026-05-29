@@ -59,7 +59,8 @@ func extractSentenceSamples(req UISentenceExtractionRequest) (UISentenceExtracti
 	if err != nil {
 		return UISentenceExtractionResult{}, err
 	}
-	units, promptCount := sentenceScriptUnits(text)
+	targetSamples := normalizeTarget(req.TargetSamples)
+	units, promptCount := sentenceScriptUnitsWithTarget(text, targetSamples)
 	if promptCount == 0 {
 		return UISentenceExtractionResult{}, errors.New("sentence text must contain Hangul syllables")
 	}
@@ -241,6 +242,10 @@ func sentencePromptToUI(prompt sentencePromptDefinition) UISentencePrompt {
 }
 
 func sentencePromptOccurrences(text string) []sentencePromptOccurrence {
+	return sentencePromptOccurrencesWithTarget(text, defaultTargetSamples)
+}
+
+func sentencePromptOccurrencesWithTarget(text string, target int) []sentencePromptOccurrence {
 	occurrences := []sentencePromptOccurrence{}
 	for _, r := range text {
 		parts, ok := hangul.DecomposeRune(r)
@@ -248,7 +253,7 @@ func sentencePromptOccurrences(text string) []sentencePromptOccurrence {
 			continue
 		}
 		occurrences = append(occurrences, sentencePromptOccurrence{
-			promptID: promptIDForHangul(parts),
+			promptID: promptIDForHangulWithTarget(r, parts, target),
 			text:     string(r),
 		})
 	}
@@ -256,8 +261,12 @@ func sentencePromptOccurrences(text string) []sentencePromptOccurrence {
 }
 
 func sentenceScriptUnits(text string) ([]sentenceScriptUnit, int) {
-	steps, _ := sequenceForText(text)
-	occurrences := sentencePromptOccurrences(text)
+	return sentenceScriptUnitsWithTarget(text, defaultTargetSamples)
+}
+
+func sentenceScriptUnitsWithTarget(text string, target int) ([]sentenceScriptUnit, int) {
+	steps, _ := sequenceForTextWithTarget(text, target)
+	occurrences := sentencePromptOccurrencesWithTarget(text, target)
 	units := []sentenceScriptUnit{}
 	promptIndex := 0
 	promptCount := 0

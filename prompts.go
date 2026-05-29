@@ -24,7 +24,17 @@ type sentencePromptDefinition struct {
 	Description string
 }
 
-var guvoicePromptCatalog = []promptDefinition{
+const maxTargetSamples = 300
+
+var balancedExactJungseongOrder = []int{
+	0, 4, 1, 5, 8, 13, 18, 20, 2, 6, 12, 17, 9, 14, 11, 16, 3, 7, 10, 15, 19,
+}
+
+var balancedExactJongseongOrder = []int{
+	4, 21, 8, 16, 1, 17, 7, 19, 20, 22, 27,
+}
+
+var guvoiceMinimalPromptCatalog = []promptDefinition{
 	{ID: "vowel-a", Label: "모음 아", Text: "아"},
 	{ID: "vowel-eo", Label: "모음 어", Text: "어"},
 	{ID: "vowel-o", Label: "모음 오", Text: "오"},
@@ -50,9 +60,80 @@ var guvoicePromptCatalog = []promptDefinition{
 	{ID: "rep-ta", Label: "대표음 타", Text: "타"},
 	{ID: "rep-pa", Label: "대표음 파", Text: "파"},
 	{ID: "rep-ha", Label: "대표음 하", Text: "하"},
+}
+
+var guvoiceTonePromptCatalog = []promptDefinition{
 	{ID: "tone-soft", Label: "부드러운 톤", Text: "오늘은 맑고 차분하게 말합니다."},
 	{ID: "tone-fast", Label: "빠른 톤", Text: "작은 소리로 또렷하게 읽어 보겠습니다."},
 	{ID: "tone-question", Label: "질문 톤", Text: "이 설정으로 미리듣기를 만들어 볼까요?"},
+}
+
+var guvoicePromptCatalog = buildGuvoicePromptCatalog()
+var guvoicePromptCatalogIndex = buildPromptCatalogIndex(guvoicePromptCatalog)
+
+func buildGuvoicePromptCatalog() []promptDefinition {
+	catalog := append([]promptDefinition(nil), guvoiceMinimalPromptCatalog...)
+	catalog = appendBalancedExactPrompts(catalog)
+	catalog = append(catalog, guvoiceTonePromptCatalog...)
+	return catalog
+}
+
+func appendBalancedExactPrompts(catalog []promptDefinition) []promptDefinition {
+	seenText := map[string]bool{}
+	for _, prompt := range catalog {
+		if prompt.Text != "" {
+			seenText[prompt.Text] = true
+		}
+	}
+	appendExactSyllable := func(syllable rune) {
+		if len(catalog) >= maxTargetSamples {
+			return
+		}
+		text := string(syllable)
+		if seenText[text] {
+			return
+		}
+		seenText[text] = true
+		catalog = append(catalog, promptDefinition{
+			ID:    hangul.SyllablePromptID(syllable),
+			Label: "\uc815\ud655 \uc74c\uc808 " + text,
+			Text:  text,
+		})
+	}
+
+	choseongCount := len(hangul.ChoseongTokens())
+	jungseongCount := len(hangul.JungseongTokens())
+	jongseongCount := len(hangul.JongseongTokens())
+	for _, jungseongIndex := range balancedExactJungseongOrder {
+		if jungseongIndex < 0 || jungseongIndex >= jungseongCount {
+			continue
+		}
+		for choseongIndex := 0; len(catalog) < maxTargetSamples && choseongIndex < choseongCount; choseongIndex++ {
+			appendExactSyllable(hangul.Compose(choseongIndex, jungseongIndex, 0))
+		}
+	}
+	for _, jongseongIndex := range balancedExactJongseongOrder {
+		if jongseongIndex <= 0 || jongseongIndex > jongseongCount {
+			continue
+		}
+		for _, jungseongIndex := range balancedExactJungseongOrder {
+			if jungseongIndex < 0 || jungseongIndex >= jungseongCount {
+				continue
+			}
+			for choseongIndex := 0; len(catalog) < maxTargetSamples && choseongIndex < choseongCount; choseongIndex++ {
+				appendExactSyllable(hangul.Compose(choseongIndex, jungseongIndex, jongseongIndex))
+			}
+		}
+	}
+	return catalog
+}
+
+func buildPromptCatalogIndex(catalog []promptDefinition) map[string]int {
+	index := make(map[string]int, len(catalog))
+	for i, prompt := range catalog {
+		index[prompt.ID] = i
+	}
+	return index
 }
 
 var guvoiceSentencePrompts = []sentencePromptDefinition{
@@ -134,7 +215,11 @@ func sentencePromptDefinitionForID(promptID string) (sentencePromptDefinition, b
 }
 
 func sentencePromptCoveredPromptIDs(text string) []string {
-	_, promptIDs := sequenceForText(text)
+	return sentencePromptCoveredPromptIDsWithTarget(text, defaultTargetSamples)
+}
+
+func sentencePromptCoveredPromptIDsWithTarget(text string, target int) []string {
+	_, promptIDs := sequenceForTextWithTarget(text, target)
 	return promptIDs
 }
 
@@ -183,6 +268,10 @@ func sampleUsableForSynthesis(sample model.Sample) bool {
 }
 
 func sequenceForText(text string) ([]synth.SequenceStep, []string) {
+	return sequenceForTextWithTarget(text, defaultTargetSamples)
+}
+
+func sequenceForTextWithTarget(text string, target int) ([]synth.SequenceStep, []string) {
 	steps := []synth.SequenceStep{}
 	usedPromptIDs := map[string]bool{}
 	pendingSpaces := 0
@@ -218,7 +307,7 @@ func sequenceForText(text string) ([]synth.SequenceStep, []string) {
 			steps = append(steps, synth.SequenceStep{SilenceMillis: 70})
 			continue
 		}
-		promptID := promptIDForHangul(parts)
+		promptID := promptIDForHangulWithTarget(r, parts, target)
 		usedPromptIDs[promptID] = true
 		steps = append(steps, synth.SequenceStep{PromptID: promptID})
 	}
@@ -232,6 +321,17 @@ func sequenceForText(text string) ([]synth.SequenceStep, []string) {
 	}
 	sort.Strings(promptIDs)
 	return steps, promptIDs
+}
+
+func promptIDForHangulWithTarget(r rune, parts hangul.Parts, target int) string {
+	target = normalizeTarget(target)
+	if target > defaultTargetSamples {
+		exactPromptID := hangul.SyllablePromptID(r)
+		if index, ok := guvoicePromptCatalogIndex[exactPromptID]; ok && index < target {
+			return exactPromptID
+		}
+	}
+	return promptIDForHangul(parts)
 }
 
 func promptIDForHangul(parts hangul.Parts) string {

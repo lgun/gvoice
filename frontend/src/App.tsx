@@ -4,11 +4,11 @@ import { decodeAudioFileToMonoWav, wavDataUrlFromPcm } from "./lib/audio";
 import {
   AnalysisResult,
   EngineStatus,
-  MAX_SAMPLE_TARGET,
   MIN_SAMPLE_TARGET,
   OutputDirectorySettings,
   PreviewResult,
   SAMPLE_PROMPTS,
+  SAMPLE_TARGET_OPTIONS,
   SentencePrompt,
   SentenceSampleCandidate,
   SpeechItem,
@@ -17,7 +17,8 @@ import {
   SynthesisOptions,
   TabId,
   VoiceSample,
-  VoiceSource
+  VoiceSource,
+  normalizeTargetSamples
 } from "./types";
 
 const initialOptions: SynthesisOptions = {
@@ -29,8 +30,7 @@ const initialOptions: SynthesisOptions = {
 
 const defaultSpeakText = "안녕하세요. 오늘은 구보이스 목소리 소스를 테스트합니다.";
 
-const clampTargetSamples = (value?: number) =>
-  Math.min(MAX_SAMPLE_TARGET, Math.max(MIN_SAMPLE_TARGET, value || MIN_SAMPLE_TARGET));
+const targetOptionValue = normalizeTargetSamples;
 
 const formatDate = (value: string) => {
   const date = new Date(value);
@@ -57,7 +57,7 @@ const formatDuration = (seconds: number) => {
 };
 
 const requiredPromptsFor = (source?: VoiceSource) =>
-  SAMPLE_PROMPTS.slice(0, clampTargetSamples(source?.targetSamples));
+  SAMPLE_PROMPTS.slice(0, normalizeTargetSamples(source?.targetSamples));
 
 const filledPromptIdsOf = (source?: VoiceSource) =>
   new Set(source?.samples.map((sample) => sample.promptId ?? sample.label) ?? []);
@@ -69,7 +69,7 @@ const filledCountOf = (source?: VoiceSource) => {
 };
 
 const progressOf = (source: VoiceSource) =>
-  Math.min(100, Math.round((filledCountOf(source) / clampTargetSamples(source.targetSamples)) * 100));
+  Math.min(100, Math.round((filledCountOf(source) / normalizeTargetSamples(source.targetSamples)) * 100));
 
 type RecordingMode = "single" | "sentence";
 
@@ -136,17 +136,17 @@ function SourceList({
       <div className="panel-head">
         <div>
           <p className="eyebrow">guvoice</p>
-          <h1>목소리 소스</h1>
+          <h1>목소리 프리셋</h1>
         </div>
-        <button className="icon-button" type="button" onClick={onCreate} title="새 소스">
+        <button className="icon-button" type="button" onClick={onCreate} title="새 프리셋">
           +
         </button>
       </div>
 
       {sources.length === 0 ? (
         <button className="source-empty" type="button" onClick={onCreate}>
-          <strong>새 소스 만들기</strong>
-          <span>녹음 탭에서 바로 시작할 수 있습니다.</span>
+          <strong>새 프리셋 만들기</strong>
+          <span>생성 화면에서 녹음 타입을 고른 뒤 시작합니다.</span>
         </button>
       ) : (
         <div className="source-list">
@@ -161,7 +161,7 @@ function SourceList({
               >
                 <span className="source-title">{source.name}</span>
                 <span className="source-meta">
-                  {source.speaker} · 필수 {filledCountOf(source)}/{clampTargetSamples(source.targetSamples)}
+                  {source.speaker} · 필수 {filledCountOf(source)}/{normalizeTargetSamples(source.targetSamples)}
                 </span>
                 <ProgressBar value={progress} />
               </button>
@@ -184,7 +184,7 @@ function Tabs({
     { id: "speak", label: "말하기" },
     { id: "record", label: "녹음" },
     { id: "library", label: "보관함" },
-    { id: "manage", label: "소스 관리" }
+    { id: "manage", label: "프리셋 관리" }
   ];
 
   return (
@@ -239,15 +239,15 @@ function SpeakTab({
   onGoRecord: () => void;
 }) {
   const sampleCount = filledCountOf(selectedSource);
-  const targetCount = clampTargetSamples(selectedSource?.targetSamples);
+  const targetCount = normalizeTargetSamples(selectedSource?.targetSamples);
   const hasBlockingMissing = Boolean(analysis?.missing.some((item) => item.severity === "missing"));
   const sourceComplete = Boolean(selectedSource && sampleCount >= targetCount);
   const canPreview = Boolean(selectedSource && text.trim() && sourceComplete && !hasBlockingMissing);
-  const canExport = Boolean(preview?.audioUrl || preview?.status === "ready");
+  const canExport = canPreview && Boolean(preview?.audioUrl || preview?.status === "ready");
   const canSaveToLibrary = canPreview;
 
   const previewHint = !selectedSource
-    ? "목소리 소스를 만들거나 선택하세요."
+    ? "목소리 프리셋을 만들거나 선택하세요."
     : !text.trim()
       ? "말할 텍스트를 입력하세요."
       : sampleCount < targetCount
@@ -396,6 +396,38 @@ function SliderField({
   );
 }
 
+function SampleTargetPicker({
+  value,
+  onChange,
+  disabled = false
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="target-picker" role="radiogroup" aria-label="녹음 타입">
+      {SAMPLE_TARGET_OPTIONS.map((option) => (
+        <button
+          className={value === option.value ? "is-active" : ""}
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={value === option.value}
+          onClick={() => onChange(option.value)}
+          disabled={disabled}
+        >
+          <span>
+            <strong>{option.label}</strong>
+            <em>{option.value}개</em>
+          </span>
+          <small>{option.description}</small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function RecordTab({
   selectedSource,
   onEnsureSource,
@@ -441,11 +473,15 @@ function RecordTab({
   const recordingTranscriptRef = useRef("");
   const startedAtRef = useRef(0);
 
-  const selectedPrompt = SAMPLE_PROMPTS.find((prompt) => prompt.id === selectedPromptId) ?? SAMPLE_PROMPTS[0];
-  const selectedSentencePrompt =
-    sentencePrompts.find((prompt) => prompt.id === selectedSentencePromptId) ?? sentencePrompts[0];
   const recordingSupported = Boolean(navigator.mediaDevices?.getUserMedia) && Boolean(getAudioContextConstructor());
   const requiredPrompts = useMemo(() => requiredPromptsFor(selectedSource), [selectedSource?.targetSamples]);
+  const selectedPrompt =
+    requiredPrompts.find((prompt) => prompt.id === selectedPromptId) ??
+    SAMPLE_PROMPTS.find((prompt) => prompt.id === selectedPromptId) ??
+    requiredPrompts[0] ??
+    SAMPLE_PROMPTS[0];
+  const selectedSentencePrompt =
+    sentencePrompts.find((prompt) => prompt.id === selectedSentencePromptId) ?? sentencePrompts[0];
   const filledPromptIds = useMemo(() => filledPromptIdsOf(selectedSource), [selectedSource?.samples]);
   const missingPrompts = useMemo(
     () => requiredPrompts.filter((prompt) => !filledPromptIds.has(prompt.id)),
@@ -619,7 +655,7 @@ function RecordTab({
     if (selectedSource) {
       return selectedSource;
     }
-    setRecorderNotice("목소리 소스를 만들고 있습니다.");
+    setRecorderNotice("목소리 프리셋을 만들고 있습니다.");
     return onEnsureSource();
   };
 
@@ -633,7 +669,7 @@ function RecordTab({
     }
     const source = await resolveSource();
     if (!source) {
-      setRecorderError("목소리 소스를 만들지 못했습니다.");
+      setRecorderError("목소리 프리셋을 만들지 못했습니다.");
       return;
     }
 
@@ -659,7 +695,7 @@ function RecordTab({
 
     const source = await resolveSource();
     if (!source) {
-      setRecorderError("목소리 소스를 만들지 못했습니다.");
+      setRecorderError("목소리 프리셋을 만들지 못했습니다.");
       return;
     }
 
@@ -718,7 +754,7 @@ function RecordTab({
       }
       const source = await resolveSource();
       if (!source) {
-        setRecorderError("목소리 소스를 만들지 못했습니다.");
+        setRecorderError("목소리 프리셋을 만들지 못했습니다.");
         return;
       }
       if (!recordingSupported) {
@@ -820,7 +856,7 @@ function RecordTab({
     setIsRecording(false);
 
     if (!source) {
-      setRecorderError("목소리 소스를 찾지 못했습니다.");
+      setRecorderError("목소리 프리셋을 찾지 못했습니다.");
       return;
     }
     if (!chunks.length) {
@@ -843,6 +879,7 @@ function RecordTab({
           const result = await voiceApi.extractSentenceSamples({
             promptId: sentencePrompt?.id,
             sentencePromptId: sentencePrompt?.id,
+            targetSamples: normalizeTargetSamples(source.targetSamples),
             text: sentenceTextAtStart,
             audioName: `sentence-${sentencePrompt?.id ?? "custom"}.wav`,
             audioUrl: previewUrl,
@@ -895,7 +932,7 @@ function RecordTab({
     }
     const source = await resolveSource();
     if (!source) {
-      setRecorderError("목소리 소스를 만들지 못했습니다.");
+      setRecorderError("목소리 프리셋을 만들지 못했습니다.");
       return;
     }
     setRecorderError("");
@@ -942,10 +979,10 @@ function RecordTab({
         <div className="section-head compact">
           <div>
             <FieldLabel>앱 내 직접 녹음</FieldLabel>
-            <h2>{selectedSource?.name ?? "새 소스가 자동으로 만들어집니다"}</h2>
+            <h2>{selectedSource?.name ?? "새 프리셋이 자동으로 만들어집니다"}</h2>
           </div>
           <span className="pill">
-            필수 {filledCountOf(selectedSource)}/{clampTargetSamples(selectedSource?.targetSamples)}
+            필수 {filledCountOf(selectedSource)}/{normalizeTargetSamples(selectedSource?.targetSamples)}
           </span>
         </div>
 
@@ -1101,7 +1138,7 @@ function RecordTab({
             </label>
           </div>
           <div className="prompt-grid">
-            {SAMPLE_PROMPTS.map((prompt) => (
+            {requiredPrompts.map((prompt) => (
               <button
                 className={[
                   prompt.id === selectedPromptId ? "is-active" : "",
@@ -1406,18 +1443,18 @@ function ManageTab({
   const [newName, setNewName] = useState("");
   const [newSpeaker, setNewSpeaker] = useState("");
   const [newNote, setNewNote] = useState("");
-  const [newTarget, setNewTarget] = useState(MIN_SAMPLE_TARGET);
+  const [newTarget, setNewTarget] = useState(targetOptionValue(MIN_SAMPLE_TARGET));
   const [editName, setEditName] = useState("");
   const [editSpeaker, setEditSpeaker] = useState("");
   const [editNote, setEditNote] = useState("");
-  const [editTarget, setEditTarget] = useState(MIN_SAMPLE_TARGET);
+  const [editTarget, setEditTarget] = useState(targetOptionValue(MIN_SAMPLE_TARGET));
   const [outputPath, setOutputPath] = useState("");
 
   useEffect(() => {
     setEditName(selectedSource?.name ?? "");
     setEditSpeaker(selectedSource?.speaker ?? "");
     setEditNote(selectedSource?.note ?? "");
-    setEditTarget(clampTargetSamples(selectedSource?.targetSamples));
+    setEditTarget(targetOptionValue(selectedSource?.targetSamples));
   }, [selectedSource]);
 
   useEffect(() => {
@@ -1430,12 +1467,12 @@ function ManageTab({
       name: newName,
       speaker: newSpeaker,
       note: newNote,
-      targetSamples: clampTargetSamples(newTarget)
+      targetSamples: targetOptionValue(newTarget)
     });
     setNewName("");
     setNewSpeaker("");
     setNewNote("");
-    setNewTarget(MIN_SAMPLE_TARGET);
+    setNewTarget(targetOptionValue(MIN_SAMPLE_TARGET));
   };
 
   const submitUpdate = (event: FormEvent) => {
@@ -1444,7 +1481,7 @@ function ManageTab({
       name: editName,
       speaker: editSpeaker,
       note: editNote,
-      targetSamples: clampTargetSamples(editTarget)
+      targetSamples: targetOptionValue(editTarget)
     });
   };
 
@@ -1463,14 +1500,14 @@ function ManageTab({
         <div className="section-head compact">
           <div>
             <FieldLabel>생성</FieldLabel>
-            <h2>새 목소리 소스</h2>
+            <h2>새 목소리 프리셋</h2>
           </div>
           <button className="primary" type="submit">
             생성
           </button>
         </div>
         <label>
-          <FieldLabel>소스 이름</FieldLabel>
+          <FieldLabel>프리셋 이름</FieldLabel>
           <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="예: 내 안내 목소리" />
         </label>
         <label>
@@ -1481,30 +1518,24 @@ function ManageTab({
           <FieldLabel>메모</FieldLabel>
           <textarea value={newNote} onChange={(event) => setNewNote(event.target.value)} rows={3} />
         </label>
-        <label>
-          <FieldLabel>목표 샘플 수</FieldLabel>
-          <input
-            type="number"
-            min={MIN_SAMPLE_TARGET}
-            max={MAX_SAMPLE_TARGET}
-            value={newTarget}
-            onChange={(event) => setNewTarget(clampTargetSamples(Number(event.target.value)))}
-          />
-        </label>
+        <div className="target-field">
+          <FieldLabel>녹음 타입</FieldLabel>
+          <SampleTargetPicker value={newTarget} onChange={setNewTarget} />
+        </div>
       </form>
 
       <form className="manage-form" onSubmit={submitUpdate}>
         <div className="section-head compact">
           <div>
             <FieldLabel>편집</FieldLabel>
-            <h2>{selectedSource?.name ?? "선택된 소스 없음"}</h2>
+            <h2>{selectedSource?.name ?? "선택된 프리셋 없음"}</h2>
           </div>
           <button type="submit" disabled={!selectedSource}>
             저장
           </button>
         </div>
         <label>
-          <FieldLabel>소스 이름</FieldLabel>
+          <FieldLabel>프리셋 이름</FieldLabel>
           <input value={editName} onChange={(event) => setEditName(event.target.value)} disabled={!selectedSource} />
         </label>
         <label>
@@ -1515,19 +1546,12 @@ function ManageTab({
           <FieldLabel>메모</FieldLabel>
           <textarea value={editNote} onChange={(event) => setEditNote(event.target.value)} rows={3} disabled={!selectedSource} />
         </label>
-        <label>
-          <FieldLabel>목표 샘플 수</FieldLabel>
-          <input
-            type="number"
-            min={MIN_SAMPLE_TARGET}
-            max={MAX_SAMPLE_TARGET}
-            value={editTarget}
-            onChange={(event) => setEditTarget(clampTargetSamples(Number(event.target.value)))}
-            disabled={!selectedSource}
-          />
-        </label>
+        <div className="target-field">
+          <FieldLabel>녹음 타입</FieldLabel>
+          <SampleTargetPicker value={editTarget} onChange={setEditTarget} disabled={!selectedSource} />
+        </div>
         <button className="danger" type="button" onClick={onDelete} disabled={!selectedSource}>
-          소스 삭제
+          프리셋 삭제
         </button>
       </form>
 
@@ -1577,10 +1601,11 @@ function StatusPanel({
   preview: PreviewResult | null;
 }) {
   const progress = selectedSource ? progressOf(selectedSource) : 0;
-  const sourceComplete = Boolean(selectedSource && filledCountOf(selectedSource) >= clampTargetSamples(selectedSource.targetSamples));
+  const sourceComplete = Boolean(selectedSource && filledCountOf(selectedSource) >= normalizeTargetSamples(selectedSource.targetSamples));
   const coveredPromptLabels = new Set(selectedSource?.samples.map((sample) => sample.label));
   const coveredPromptIds = new Set(selectedSource?.samples.map((sample) => sample.promptId ?? sample.label));
-  const nextPrompts = SAMPLE_PROMPTS.filter(
+  const requiredPrompts = selectedSource ? requiredPromptsFor(selectedSource) : [];
+  const nextPrompts = requiredPrompts.filter(
     (prompt) => !coveredPromptIds.has(prompt.id) && !coveredPromptLabels.has(prompt.label)
   ).slice(0, 4);
 
@@ -1596,7 +1621,7 @@ function StatusPanel({
       </div>
 
       <div className="status-block">
-        <FieldLabel>선택 소스</FieldLabel>
+        <FieldLabel>선택 프리셋</FieldLabel>
         <h2>{selectedSource?.name ?? "없음"}</h2>
         <dl className="metric-list">
           <div>
@@ -1606,7 +1631,7 @@ function StatusPanel({
           <div>
             <dt>샘플</dt>
             <dd>
-              {filledCountOf(selectedSource)}/{clampTargetSamples(selectedSource?.targetSamples)}
+              {filledCountOf(selectedSource)}/{normalizeTargetSamples(selectedSource?.targetSamples)}
             </dd>
           </div>
           <div>
@@ -1694,7 +1719,7 @@ export default function App() {
 
   useEffect(() => {
     setPreview(null);
-  }, [selectedSourceId, text, options]);
+  }, [selectedSourceId, selectedSource?.updatedAt, text, options]);
 
   useEffect(() => {
     if (!selectedSource || !text.trim()) {
@@ -1740,11 +1765,11 @@ export default function App() {
       name: input.name.trim() || "새 목소리",
       speaker: input.speaker.trim() || "나",
       note: input.note.trim(),
-      targetSamples: clampTargetSamples(input.targetSamples)
+      targetSamples: targetOptionValue(input.targetSamples)
     });
     await refreshSources(created.id);
     setActiveTab("record");
-    setNotice("새 목소리 소스를 만들었습니다. 녹음 탭에서 바로 샘플을 채울 수 있습니다.");
+    setNotice("새 목소리 프리셋을 만들었습니다. 녹음 탭에서 바로 샘플을 채울 수 있습니다.");
     return created;
   };
 
@@ -1755,7 +1780,7 @@ export default function App() {
     return handleCreateSource({
       name: "내 목소리",
       speaker: "나",
-      note: "앱에서 직접 녹음한 목소리 소스",
+      note: "앱에서 직접 녹음한 목소리 프리셋",
       targetSamples: MIN_SAMPLE_TARGET
     });
   };
@@ -1766,7 +1791,7 @@ export default function App() {
     }
     const updated = await voiceApi.updateSource(selectedSource.id, patch);
     await refreshSources(updated.id);
-    setNotice("소스 정보를 저장했습니다.");
+    setNotice("프리셋 정보를 저장했습니다.");
   };
 
   const handleDeleteSource = async () => {
@@ -1775,7 +1800,7 @@ export default function App() {
     }
     await voiceApi.deleteSource(selectedSource.id);
     await refreshSources();
-    setNotice("소스를 삭제했습니다.");
+    setNotice("프리셋을 삭제했습니다.");
   };
 
   const handleAddSample = async (sourceId: string, sample: Omit<VoiceSample, "id" | "createdAt">) => {
@@ -1920,7 +1945,7 @@ export default function App() {
         sources={sources}
         selectedId={selectedSourceId}
         onSelect={selectSource}
-        onCreate={() => setActiveTab("record")}
+        onCreate={() => setActiveTab("manage")}
       />
 
       <main className="main-panel">

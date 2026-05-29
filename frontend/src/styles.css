@@ -485,6 +485,60 @@ h2 {
   accent-color: var(--accent);
 }
 
+.target-field {
+  display: grid;
+  gap: 6px;
+}
+
+.target-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.target-picker button {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 82px;
+  padding: 9px;
+  text-align: left;
+}
+
+.target-picker button.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.target-picker span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.target-picker strong,
+.target-picker em {
+  overflow: hidden;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-picker em {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.target-picker small {
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
 .action-strip {
   justify-content: flex-start;
   flex-wrap: wrap;
@@ -1171,7 +1225,8 @@ h2 {
   }
 
   .option-grid,
-  .prompt-grid {
+  .prompt-grid,
+  .target-picker {
     grid-template-columns: 1fr;
   }
 }
