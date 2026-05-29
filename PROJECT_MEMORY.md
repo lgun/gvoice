@@ -28,7 +28,7 @@ Empty sources, sources with missing required samples, and sources whose required
 - Keep MVP metadata in JSON rather than SQLite.
 - Let the frontend run in a normal browser with localStorage fallback when Wails bindings are unavailable.
 - Use Wails bindings when running as the desktop app.
-- Keep export destination configurable, while preserving the app's default `exports` folder as the normalized default.
+- Keep MP3 export destination configurable, while preserving the app's default `exports` folder as the normalized default for explicit MP3 saves.
 - Keep the in-app speech library separate from MP3 export output. The two configured directories must not resolve to the same physical path.
 
 ## UI Direction
@@ -90,6 +90,7 @@ Prompt catalog note: the first 25 minimal prompts are preserved. Prompts 26-300 
 - Silent samples are rejected at save/upload time.
 - Legacy samples that are silent or cannot be read are excluded from analysis and synthesis readiness, so they do not make a source look usable.
 - Preview renders WAV data URLs.
+- Speak preview WAVs are written under the app data `temp` folder and must not create preview files or manifests in `exports` or configured MP3 export folders.
 - Export writes real `.mp3` files using the pure Go `github.com/braheezy/shine-mp3/pkg/mp3` encoder.
 - MP3 export folder is user-configurable and can be opened from the app. The persisted setting uses `path=""` for default; the UI shows `defaultPath` for the actual default `exports` directory. If the user selects or enters the actual default exports path, it is normalized back to the default setting.
 - Speech library saving is separate from one-off MP3 export. `SaveSpeechItem` creates an MP3 from the current text/source/options and stores it under the speech library directory.

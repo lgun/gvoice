@@ -30,6 +30,7 @@ type Store struct {
 	baseDir          string
 	samplesDir       string
 	exportsDir       string
+	tempDir          string
 	speechLibraryDir string
 	statePath        string
 	state            model.State
@@ -53,6 +54,7 @@ func Open(baseDir string) (*Store, error) {
 		baseDir:          baseDir,
 		samplesDir:       filepath.Join(baseDir, "samples"),
 		exportsDir:       filepath.Join(baseDir, "exports"),
+		tempDir:          filepath.Join(baseDir, "temp"),
 		speechLibraryDir: filepath.Join(baseDir, "speech-library"),
 		statePath:        filepath.Join(baseDir, "state.json"),
 	}
@@ -60,6 +62,12 @@ func Open(baseDir string) (*Store, error) {
 		return nil, err
 	}
 	if err := os.MkdirAll(store.exportsDir, 0700); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(store.tempDir, 0700); err != nil {
+		return nil, err
+	}
+	if err := store.migrateLegacyPreviewArtifacts(); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(store.speechLibraryDir, 0700); err != nil {
@@ -77,6 +85,10 @@ func (s *Store) BaseDir() string {
 
 func (s *Store) ExportsDir() string {
 	return s.exportsDir
+}
+
+func (s *Store) TempDir() string {
+	return s.tempDir
 }
 
 func (s *Store) DefaultSpeechLibraryDir() string {
@@ -172,6 +184,9 @@ func (s *Store) UpdateSettings(settings model.AppSettings) (model.AppSettings, e
 	if effectiveDir == "" {
 		effectiveDir = s.exportsDir
 	}
+	if samePath(effectiveDir, s.tempDir) {
+		return model.AppSettings{}, fmt.Errorf("MP3 export directory %q cannot be the app temporary directory %q", effectiveDir, s.tempDir)
+	}
 	speechLibraryDir := s.speechLibraryDirLocked()
 	if samePath(effectiveDir, speechLibraryDir) {
 		return model.AppSettings{}, fmt.Errorf("MP3 export directory %q cannot be the same as the speech library directory %q", effectiveDir, speechLibraryDir)
@@ -207,6 +222,9 @@ func (s *Store) UpdateSpeechLibraryDirectory(path string) (model.AppSettings, er
 	effectiveDir := dir
 	if effectiveDir == "" {
 		effectiveDir = s.speechLibraryDir
+	}
+	if samePath(effectiveDir, s.tempDir) {
+		return model.AppSettings{}, fmt.Errorf("speech library directory %q cannot be the app temporary directory %q", effectiveDir, s.tempDir)
 	}
 	mp3ExportDir := s.mp3ExportDirLocked()
 	if samePath(effectiveDir, mp3ExportDir) {
@@ -813,6 +831,58 @@ func (s *Store) load() error {
 	}
 	s.state = state
 	return nil
+}
+
+func (s *Store) migrateLegacyPreviewArtifacts() error {
+	entries, err := os.ReadDir(s.exportsDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !isLegacyPreviewArtifact(entry.Name()) {
+			continue
+		}
+		src := filepath.Join(s.exportsDir, entry.Name())
+		dst, err := uniquePath(filepath.Join(s.tempDir, entry.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("could not migrate legacy preview artifact %q: %w", src, err)
+		}
+	}
+	return nil
+}
+
+func isLegacyPreviewArtifact(name string) bool {
+	base := filepath.Base(name)
+	if base != name || !strings.HasPrefix(base, "preview-") {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".wav", ".json":
+		return true
+	default:
+		return false
+	}
+}
+
+func uniquePath(path string) (string, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return path, nil
+	} else if err != nil {
+		return "", err
+	}
+	ext := filepath.Ext(path)
+	stem := strings.TrimSuffix(path, ext)
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s-%d%s", stem, i, ext)
+		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+			return candidate, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
 }
 
 func (s *Store) saveLocked() error {

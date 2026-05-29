@@ -499,6 +499,10 @@ func (a *App) AnalyzeText(sourceID string, text string) (UIAnalysisResult, error
 }
 
 func (a *App) Synthesize(req UISynthesisRequest) (UIPreviewResult, error) {
+	store, err := a.ensureStore()
+	if err != nil {
+		return UIPreviewResult{}, err
+	}
 	report, err := a.AnalyzeText(req.SourceID, req.Text)
 	if err != nil {
 		return UIPreviewResult{}, err
@@ -510,15 +514,19 @@ func (a *App) Synthesize(req UISynthesisRequest) (UIPreviewResult, error) {
 			Message: "소스가 아직 채워지지 않아 미리듣기를 만들 수 없습니다.",
 		}, nil
 	}
+	outputName := "preview-" + ids.New("audio")
 	result, err := a.synthesizeToFile(model.SynthesisRequest{
 		SourceID:       req.SourceID,
 		Text:           req.Text,
 		Format:         "wav",
-		OutputName:     "preview-" + ids.New("audio"),
+		OutputName:     outputName,
+		OutputPath:     filepath.Join(store.TempDir(), outputName+".wav"),
 		Speed:          req.Options.Speed,
 		Pitch:          req.Options.Pitch,
 		Clarity:        req.Options.Clarity,
 		NoiseReduction: req.Options.NoiseReduction,
+		SkipManifest:   true,
+		SkipRecord:     true,
 	})
 	if err != nil {
 		return UIPreviewResult{

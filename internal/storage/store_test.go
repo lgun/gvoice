@@ -18,6 +18,9 @@ func TestStorePersistsVoiceSourceAndSample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(store.TempDir()); err != nil {
+		t.Fatalf("expected temp dir to be created: %v", err)
+	}
 	source, err := store.CreateVoiceSource(model.CreateVoiceSourceRequest{Name: "test voice"})
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +49,76 @@ func TestStorePersistsVoiceSourceAndSample(t *testing.T) {
 	if got := reopened.ListSamples(source.ID); len(got) != 1 {
 		t.Fatalf("expected 1 sample after reopen, got %d", len(got))
 	}
+}
+
+func TestOpenMigratesLegacyPreviewArtifactsToTemp(t *testing.T) {
+	baseDir := t.TempDir()
+	exportsDir := filepath.Join(baseDir, "exports")
+	tempDir := filepath.Join(baseDir, "temp")
+	if err := os.MkdirAll(exportsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(tempDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(exportsDir, "preview-legacy.wav"):  "wav",
+		filepath.Join(exportsDir, "preview-legacy.json"): "json",
+		filepath.Join(exportsDir, "saved-export.mp3"):    "mp3",
+		filepath.Join(exportsDir, "preview-legacy.mp3"):  "preview mp3",
+		filepath.Join(exportsDir, "voice.zip"):           "zip",
+	}
+	for path, data := range files {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(exportsDir, "preview-directory.wav"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(baseDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertMissing(t, filepath.Join(store.ExportsDir(), "preview-legacy.wav"))
+	assertMissing(t, filepath.Join(store.ExportsDir(), "preview-legacy.json"))
+	assertFileContent(t, filepath.Join(store.TempDir(), "preview-legacy.wav"), "wav")
+	assertFileContent(t, filepath.Join(store.TempDir(), "preview-legacy.json"), "json")
+	assertFileContent(t, filepath.Join(store.ExportsDir(), "saved-export.mp3"), "mp3")
+	assertFileContent(t, filepath.Join(store.ExportsDir(), "preview-legacy.mp3"), "preview mp3")
+	assertFileContent(t, filepath.Join(store.ExportsDir(), "voice.zip"), "zip")
+	if info, err := os.Stat(filepath.Join(store.ExportsDir(), "preview-directory.wav")); err != nil || !info.IsDir() {
+		t.Fatalf("expected preview-like directory to remain in exports, info=%#v err=%v", info, err)
+	}
+}
+
+func TestOpenMigratesLegacyPreviewArtifactsWithoutOverwritingTempFiles(t *testing.T) {
+	baseDir := t.TempDir()
+	exportsDir := filepath.Join(baseDir, "exports")
+	tempDir := filepath.Join(baseDir, "temp")
+	if err := os.MkdirAll(exportsDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(tempDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(exportsDir, "preview-same.wav"), []byte("legacy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "preview-same.wav"), []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(baseDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertMissing(t, filepath.Join(store.ExportsDir(), "preview-same.wav"))
+	assertFileContent(t, filepath.Join(store.TempDir(), "preview-same.wav"), "existing")
+	assertFileContent(t, filepath.Join(store.TempDir(), "preview-same-1.wav"), "legacy")
 }
 
 func TestRegisterUploadCanCreatePromptSample(t *testing.T) {
@@ -222,6 +295,24 @@ func TestUpdateSettingsRejectsCurrentSpeechLibraryDirectory(t *testing.T) {
 	}
 }
 
+func TestUpdateSettingsRejectsTempDirectory(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.UpdateSettings(model.AppSettings{MP3ExportDirectory: store.TempDir()})
+	if err == nil {
+		t.Fatal("expected temp directory to be rejected as export directory")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "temporary directory") {
+		t.Fatalf("expected clear temporary directory error, got %v", err)
+	}
+	if samePath(store.MP3ExportDir(), store.TempDir()) {
+		t.Fatalf("temp directory should not be stored as MP3 export directory")
+	}
+}
+
 func TestSpeechLibraryDirectoryDefaultsToAppDataFolder(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -292,6 +383,24 @@ func TestUpdateSpeechLibraryDirectoryRejectsCurrentMP3ExportDirectory(t *testing
 	}
 	if store.SpeechLibraryDir() == sharedDir {
 		t.Fatalf("conflicting speech library directory should not be stored")
+	}
+}
+
+func TestUpdateSpeechLibraryDirectoryRejectsTempDirectory(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.UpdateSpeechLibraryDirectory(store.TempDir())
+	if err == nil {
+		t.Fatal("expected temp directory to be rejected as speech library directory")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "temporary directory") {
+		t.Fatalf("expected clear temporary directory error, got %v", err)
+	}
+	if samePath(store.SpeechLibraryDir(), store.TempDir()) {
+		t.Fatalf("temp directory should not be stored as speech library directory")
 	}
 }
 
@@ -416,4 +525,22 @@ func paddedWAVData(t *testing.T) []byte {
 
 func nowForTest() time.Time {
 	return time.Now().UTC()
+}
+
+func assertMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be missing, err=%v", path, err)
+	}
+}
+
+func assertFileContent(t *testing.T, path string, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected %s to exist: %v", path, err)
+	}
+	if string(data) != want {
+		t.Fatalf("unexpected content for %s: got %q want %q", path, string(data), want)
+	}
 }

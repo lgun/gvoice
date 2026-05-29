@@ -111,6 +111,44 @@ func TestExportMP3WritesMP3File(t *testing.T) {
 		t.Fatalf("expected custom output directory settings, got %#v", settings)
 	}
 
+	preview, err := app.Synthesize(UISynthesisRequest{
+		SourceID: source.ID,
+		Text:     "hello",
+		Options: UISynthesisOptions{
+			Speed:          1,
+			Pitch:          2,
+			Clarity:        70,
+			NoiseReduction: 40,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Status != "ready" || !strings.HasPrefix(preview.AudioURL, "data:audio/wav;base64,") {
+		t.Fatalf("expected ready WAV preview, got %#v", preview)
+	}
+	exportEntries, err := os.ReadDir(store.ExportsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exportEntries) != 0 {
+		t.Fatalf("preview should not write to default exports dir, got %d entries", len(exportEntries))
+	}
+	customExportEntries, err := os.ReadDir(exportDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(customExportEntries) != 0 {
+		t.Fatalf("preview should not write to configured MP3 export dir, got %d entries", len(customExportEntries))
+	}
+	tempEntries, err := os.ReadDir(store.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tempEntries) != 1 || filepath.Ext(tempEntries[0].Name()) != ".wav" {
+		t.Fatalf("expected preview WAV in temp dir, got %#v", tempEntries)
+	}
+
 	result, err := app.ExportMP3(UISynthesisRequest{
 		SourceID: source.ID,
 		Text:     "媛",

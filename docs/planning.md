@@ -11,7 +11,7 @@ guvoice is a Wails desktop tool for making short, playful Korean sample-based vo
 - The first usable voice mode is a small Korean minimal set, not all 11,172 Hangul syllables.
 - Voice sources/presets have a recording type. Supported target sizes are 25, 100, 200, and 300 samples.
 - Generated audio can be previewed and exported.
-- MP3 export location is configurable, but the app keeps a normalized default state for the built-in exports folder.
+- MP3 export location is configurable, but the app keeps a normalized default state for the built-in exports folder used by explicit MP3 saves.
 - Generated MP3 speech can also be saved to an in-app speech library/playback list that remains separate from one-off MP3 exports.
 
 ## Minimal Sample Strategy
@@ -57,7 +57,7 @@ The MVP keeps final consonants as a timing/pitch artifact rather than requiring 
 - Once a candidate save succeeds, a later refresh failure is still treated as save success to reduce duplicate retry risk.
 - The frontend also has a localStorage fallback so the UI can be demonstrated in a normal browser during development.
 - Internal sample storage keeps current captures and metadata under the user's application data directory.
-- The Go backend decodes saved WAV samples by promptId, normalizes/trims samples, rejects silence, renders preview WAV files, and renders MP3 exports by concatenating the mapped sample sequence.
+- The Go backend decodes saved WAV samples by promptId, normalizes/trims samples, rejects silence, renders temporary preview WAV files, and renders MP3 exports by concatenating the mapped sample sequence.
 - Upload accepts browser/WebView2-decodable `audio/*`, converts it to mono 16-bit WAV in the frontend, and sends that WAV sample to Go.
 - The backend WAV decoder accepts RIFF/WAVE 16-bit PCM and WAVE_FORMAT_EXTENSIBLE PCM subtype.
 - Legacy samples that are silent or fail WAV reading are excluded from analysis and synthesis readiness.
@@ -70,7 +70,8 @@ The MVP keeps final consonants as a timing/pitch artifact rather than requiring 
 
 ## Export Folder Behavior
 
-- The default export destination is the app data `exports` directory.
+- The app data `temp` directory is used for temporary Speak preview WAV output.
+- The default explicit MP3 export destination is the app data `exports` directory.
 - State persists the MP3 folder setting.
 - `path=""` means "use the default export folder".
 - The UI receives/displays `defaultPath` so users can see where the default points.

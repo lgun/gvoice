@@ -20,7 +20,7 @@ The core product rule is strict: an empty source, an incomplete source, or a sou
 - Ignore legacy silent/unreadable samples when deciding whether a source is ready.
 - Preview generated audio as WAV.
 - Export generated audio as real MP3.
-- Configure the MP3 export folder with a Wails directory picker and open the configured folder from the app. Leaving the setting at default uses the app's `exports` folder.
+- Configure the MP3 export folder with a Wails directory picker and open the configured folder from the app. Leaving the setting at default uses the app's `exports` folder for explicit MP3 saves.
 - Save generated MP3 speech items to an in-app speech library from the Speak tab with `보관함 저장`.
 - Use the `보관함` tab to list saved speech items, inspect title/source/date/duration/file path, delete items, and prepare an item for lazy `<audio controls>` playback.
 - Configure the speech library folder separately from the MP3 export folder, and open the configured folder from the app. The app rejects settings where both folders resolve to the same physical path.
@@ -55,7 +55,8 @@ User data is stored under the user's app config directory in a `guvoice` folder.
 - `state.json`: voice sources, samples, uploads, export folder preference, speech library folder preference, saved speech item metadata, and history metadata.
 - `samples/{voiceSourceId}/prompts`: recorded prompt samples.
 - `samples/{voiceSourceId}/uploads`: uploaded samples.
-- `exports`: default preview/export output folder.
+- `temp`: temporary preview WAV output.
+- `exports`: default saved/export output folder.
 - `speech-library`: default saved speech library folder.
 
 The MP3 folder setting stores an empty path as the default. The UI can still display the resolved default exports path. If the user selects or enters the actual default exports path, the app normalizes it back to the default setting.
